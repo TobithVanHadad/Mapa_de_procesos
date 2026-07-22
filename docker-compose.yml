@@ -1,0 +1,42 @@
+services:
+  web:
+    build:
+      context: .
+      target: development
+    command: npm run dev -- --hostname 0.0.0.0
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://process_map:local_only_password@postgres:5432/process_map?schema=public
+      APP_NAME: Enterprise Process & Knowledge Map
+      APP_URL: http://localhost:3000
+      STORAGE_DRIVER: local
+      LOCAL_STORAGE_PATH: /app/uploads
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: process_map
+      POSTGRES_USER: process_map
+      POSTGRES_PASSWORD: local_only_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U process_map -d process_map"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  node_modules:
+  uploads:
+  postgres_data:
