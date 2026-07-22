@@ -10,12 +10,12 @@ services:
       DATABASE_URL: postgresql://process_map:local_only_password@postgres:5432/process_map?schema=public
       APP_NAME: Enterprise Process & Knowledge Map
       APP_URL: http://localhost:3000
-      STORAGE_DRIVER: local
-      LOCAL_STORAGE_PATH: /app/uploads
+      DATA_DIR: /app/data
+      MAX_UPLOAD_MB: "12"
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-      - uploads:/app/uploads
+      - uploads:/app/data
     depends_on:
       postgres:
         condition: service_healthy

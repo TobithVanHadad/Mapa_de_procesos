@@ -45,8 +45,13 @@ inyectada por la plataforma.
 3. Cuando comience la migración de datos, agregar PostgreSQL y referenciar su
    `DATABASE_URL` en el servicio web.
 
-La publicación inicial funciona sin base de datos; los datos visibles siguen siendo
-demostrativos hasta conectar la persistencia.
+La aplicación permite edición compartida y adjuntos PDF/imagen. Para conservar los
+cambios entre reinicios y despliegues, agregar un volumen de Railway montado en
+`/data` y configurar `DATA_DIR=/data` en el servicio web. Sin volumen, Railway usa
+almacenamiento temporal y la información puede perderse durante un redeploy.
+
+La migración PostgreSQL se mantiene para la siguiente fase de identidad, permisos,
+auditoría y consultas estructuradas.
 
 ## Verificación
 

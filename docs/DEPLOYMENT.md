@@ -24,7 +24,9 @@ de `/api/health`.
 2. Railway detectará y construirá el `Dockerfile`.
 3. Generar el dominio público del servicio web.
 4. Verificar que `/api/health` responda con `status: ok`.
-5. En la fase de persistencia, agregar PostgreSQL y exponer su variable
+5. Agregar un volumen montado en `/data` y definir `DATA_DIR=/data` para conservar
+   la ficha editable y los archivos subidos entre despliegues.
+6. En la fase de persistencia estructurada, agregar PostgreSQL y exponer su variable
    `DATABASE_URL` al servicio web.
 
 La migración inicial se conserva en `database/migrations/0001_initial.sql`, pero no

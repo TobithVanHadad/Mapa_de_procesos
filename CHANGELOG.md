@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-07-22
+
+### Added
+
+- Identidad visual azul y verde de Distribuciones Orvel.
+- Edición directa de nombre, código y estado desde cada nodo.
+- Ficha general completamente editable para procesos, personas y sistemas.
+- Carga compartida de documentos PDF e imágenes con validación de contenido.
+- Guardado automático del mapa mediante API y soporte de volumen persistente en Railway.
+
 ## [0.1.0] - 2026-07-16
 
 ### Added

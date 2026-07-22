@@ -44,6 +44,7 @@ yarn-error.log*
 # local runtime files
 /work/
 /uploads/
+/data/
 
 # vercel
 .vercel

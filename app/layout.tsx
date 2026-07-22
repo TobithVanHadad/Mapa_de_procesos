@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Enterprise Process & Knowledge Map",
-  description: "Mapa empresarial de procesos, conocimiento y control documental.",
+  title: "Mapa de Proceso Distribuciones Orvel",
+  description: "Mapa editable de procesos, personas, documentos y controles de Distribuciones Orvel.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
@@ -16,9 +17,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es">
-      <head>
-        <link rel="stylesheet" href="/app.css?v=20260722-1" />
-      </head>
       <body>{children}</body>
     </html>
   );
