@@ -29,16 +29,16 @@ Módulos: Identidad, Organización, Grafo, Procesos, Documentos, Aprobaciones, R
 
 ## 3. Tecnologías seleccionadas
 
-- React 19, TypeScript y superficie compatible con Next.js mediante vinext para esta base local.
+- React 19, TypeScript y Next.js con runtime Node.js standalone.
 - Tailwind CSS para estilos y tokens; React Flow se integra en la fase del mapa editable.
 - API modular en TypeScript, validación con Zod y contratos compartidos.
 - PostgreSQL 17 como fuente de verdad y ORM tipado equivalente a Prisma/Drizzle.
-- Auth.js con proveedor OIDC empresarial para despliegues independientes; SIWC sólo es una opción de hosting privado en Sites.
+- Auth.js con proveedor OIDC empresarial para despliegues independientes.
 - S3/Azure Blob/GCS mediante una interfaz de objetos; disco local sólo en desarrollo.
 - Node test runner para contratos iniciales; Vitest/Playwright en fases posteriores.
 - Docker Compose para aplicación y PostgreSQL local.
 
-La elección de vinext se limita a esta base compatible con Sites. Antes del despliegue final se decidirá entre mantener esa superficie o usar Next.js Node estándar; PostgreSQL, autorización y almacenamiento permanecen independientes.
+El despliegue usa Next.js Node estándar en Railway; PostgreSQL, autorización y almacenamiento permanecen desacoplados de la interfaz.
 
 ## 4. Modelo de datos inicial
 
@@ -60,13 +60,13 @@ app/                 rutas y experiencia web
 src/domain/          reglas puras del negocio
 src/modules/         módulos de aplicación (siguiente fase)
 db/                  acceso y esquema de la base
-prisma/              contrato PostgreSQL inicial
+database/            migraciones y semillas PostgreSQL
 tests/               pruebas automatizadas
 docs/                arquitectura, MVP y despliegue
 public/              recursos públicos no sensibles
-.openai/              configuración opcional de Sites
 Dockerfile
 docker-compose.yml
+railway.toml
 ```
 
 ## 6. Flujo de autenticación
@@ -94,9 +94,9 @@ Los documentos publicados no se eliminan. `DELETE` crea una baja lógica; el bor
 
 - Local: `npm install && npm run dev` o `docker compose up --build`.
 - Integración: GitHub Actions ejecuta lint, pruebas, compilación, revisión de migraciones y escaneo de dependencias.
-- Producción: aplicación en Vercel/Render/Azure/AWS; PostgreSQL administrado; almacenamiento privado; secretos en el proveedor.
+- Producción: aplicación en Railway; PostgreSQL administrado; almacenamiento privado; secretos en el proveedor.
 - Migraciones se ejecutan como paso controlado previo a la aplicación, con respaldo y plan de reversión.
-- La primera publicación permanece bloqueada hasta completar autenticación, autorización, encabezados de seguridad y pruebas de acceso.
+- La primera publicación es demostrativa y no admite datos empresariales reales hasta completar autenticación, autorización, encabezados de seguridad y pruebas de acceso.
 
 ## 10. Plan del MVP
 

@@ -3,10 +3,8 @@ setlocal
 cd /d "%~dp0.."
 
 if not exist "work" mkdir "work"
-set "XDG_CONFIG_HOME=%CD%\work\.config"
-set "WRANGLER_LOG_PATH=%CD%\work\wrangler-local.log"
 
-if not exist "node_modules\vinext\dist\cli.js" (
+if not exist "node_modules\next\dist\bin\next" (
   echo Dependencies are missing. Run npm install first.
   exit /b 1
 )
@@ -19,4 +17,4 @@ echo   Mantenga esta ventana abierta mientras la utiliza.
 echo =====================================================
 echo.
 
-"%ProgramFiles%\nodejs\node.exe" "node_modules\vinext\dist\cli.js" dev
+call npm.cmd run dev -- --hostname 0.0.0.0
