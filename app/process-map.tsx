@@ -23,6 +23,7 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type Node,
@@ -83,6 +84,145 @@ type MapDocument = {
 const TEMPLATE_PDF = "/plantillas/machote-documentacion-procesos-orvel.pdf";
 const LOCAL_STORAGE_KEY = "orvel-process-map-v3";
 const TUTORIAL_STORAGE_KEY = "orvel-process-tutorial-v1";
+const SOUND_STORAGE_KEY = "orvel-process-sound-v1";
+const BACKUP_DATABASE = "orvel-process-local-backups";
+const BACKUP_STORE = "daily-backups";
+
+type SoundSettings = {
+  enabled: boolean;
+  typing: boolean;
+  volume: number;
+};
+
+type LocalBackup = {
+  id: string;
+  createdAt: string;
+  document: MapDocument;
+};
+
+const defaultSoundSettings: SoundSettings = { enabled: true, typing: true, volume: 0.22 };
+let sharedAudioContext: AudioContext | null = null;
+let lastTypingSound = 0;
+
+function readSoundSettings(): SoundSettings {
+  try {
+    const stored = window.localStorage.getItem(SOUND_STORAGE_KEY);
+    return stored ? { ...defaultSoundSettings, ...JSON.parse(stored) as Partial<SoundSettings> } : defaultSoundSettings;
+  } catch {
+    return defaultSoundSettings;
+  }
+}
+
+function playInterfaceSound(kind: "create" | "connect" | "select" | "type" | "restore", settings: SoundSettings) {
+  if (!settings.enabled || (kind === "type" && !settings.typing) || typeof window === "undefined") return;
+  if (kind === "type" && performance.now() - lastTypingSound < 55) return;
+  if (kind === "type") lastTypingSound = performance.now();
+
+  const AudioContextConstructor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextConstructor) return;
+  sharedAudioContext ??= new AudioContextConstructor();
+  if (sharedAudioContext.state === "suspended") void sharedAudioContext.resume();
+
+  const context = sharedAudioContext;
+  const now = context.currentTime + 0.01;
+  const sequences: Record<typeof kind, Array<[number, number, number, OscillatorType]>> = {
+    create: [[523, 0, .075, "sine"], [659, .065, .09, "sine"], [784, .14, .11, "sine"]],
+    connect: [[392, 0, .065, "triangle"], [523, .055, .075, "triangle"], [659, .115, .09, "triangle"]],
+    select: [[620, 0, .045, "sine"]],
+    type: [[980 + Math.random() * 160, 0, .025, "square"]],
+    restore: [[659, 0, .08, "sine"], [523, .08, .09, "sine"], [784, .17, .13, "sine"]],
+  };
+
+  sequences[kind].forEach(([frequency, delay, duration, oscillatorType]) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = now + delay;
+    oscillator.type = oscillatorType;
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(.0001, start);
+    gain.gain.exponentialRampToValueAtTime(Math.max(.002, settings.volume * (kind === "type" ? .07 : .16)), start + .008);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(start + duration + .015);
+  });
+}
+
+function openBackupDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(BACKUP_DATABASE, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(BACKUP_STORE)) request.result.createObjectStore(BACKUP_STORE, { keyPath: "id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function readBackupRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function listLocalBackups(): Promise<LocalBackup[]> {
+  const database = await openBackupDatabase();
+  try {
+    const items = await readBackupRequest(database.transaction(BACKUP_STORE, "readonly").objectStore(BACKUP_STORE).getAll()) as LocalBackup[];
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    const ordered = items.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const retained = ordered.filter((backup) => new Date(backup.createdAt).getTime() >= cutoff).slice(0, 3);
+    const retainedIds = new Set(retained.map((backup) => backup.id));
+    const expired = ordered.filter((backup) => !retainedIds.has(backup.id));
+    if (expired.length) {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(BACKUP_STORE, "readwrite");
+        expired.forEach((backup) => transaction.objectStore(BACKUP_STORE).delete(backup.id));
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }
+    return retained;
+  } finally {
+    database.close();
+  }
+}
+
+async function keepDailyBackup(document: MapDocument): Promise<LocalBackup[]> {
+  const database = await openBackupDatabase();
+  const now = new Date();
+  const id = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+  try {
+    const existing = await readBackupRequest(database.transaction(BACKUP_STORE, "readonly").objectStore(BACKUP_STORE).get(id));
+    if (!existing) {
+      const backup: LocalBackup = { id, createdAt: new Date().toISOString(), document };
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(BACKUP_STORE, "readwrite");
+        transaction.objectStore(BACKUP_STORE).add(backup);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }
+    const items = await readBackupRequest(database.transaction(BACKUP_STORE, "readonly").objectStore(BACKUP_STORE).getAll()) as LocalBackup[];
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    const ordered = items.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const retained = ordered.filter((backup) => new Date(backup.createdAt).getTime() >= cutoff).slice(0, 3);
+    const retainedIds = new Set(retained.map((backup) => backup.id));
+    const expired = ordered.filter((backup) => !retainedIds.has(backup.id));
+    if (expired.length) {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(BACKUP_STORE, "readwrite");
+        expired.forEach((backup) => transaction.objectStore(BACKUP_STORE).delete(backup.id));
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }
+    return retained;
+  } finally {
+    database.close();
+  }
+}
 
 const typeMeta: Record<NodeKind, { short: string; label: string; color: string; description: string }> = {
   process: { short: "SP", label: "Subproceso", color: "#0b9b45", description: "Una agrupaciÃ³n de actividades que forma parte del proceso general." },
@@ -172,28 +312,33 @@ const creationMeta: Record<CreationChoice, { short: string; label: string; descr
 
 const tutorialSteps = [
   {
-    eyebrow: "1 DE 4 Â· EMPIEZA EN BLANCO",
+    eyebrow: "1 DE 5 Â· EMPIEZA EN BLANCO",
     title: "Este mapa sirve para cualquier Ã¡rea",
     body: "Edita el nombre del mapa y la primera tarjeta. Puede documentar etiquetado, almacÃ©n, contabilidad, compras o cualquier otro proceso.",
   },
   {
-    eyebrow: "2 DE 4 Â· AGREGA ESTRUCTURA",
+    eyebrow: "2 DE 5 Â· AGREGA ESTRUCTURA",
     title: "Elige quÃ© tipo de nodo necesitas",
-    body: "Usa + Agregar y selecciona rama principal, subproceso, persona, sistema, documento, control, salida o una conexiÃ³n manual.",
+    body: "Usa + Agregar y decide si el nuevo elemento se conecta con el seleccionado o nace como una rama independiente.",
   },
   {
-    eyebrow: "3 DE 4 Â· CONEXIONES INTELIGENTES",
+    eyebrow: "3 DE 5 Â· CONEXIONES INTELIGENTES",
     title: "El programa distingue proceso y soporte",
     body: "Las ramas principales se muestran gruesas. Personas, sistemas y documentos se conectan automÃ¡ticamente con lÃ­neas mÃ¡s delgadas.",
   },
   {
-    eyebrow: "4 DE 4 Â· DOCUMENTA Y COMPARTE",
+    eyebrow: "4 DE 5 Â· DOCUMENTA Y COMPARTE",
     title: "Todo se edita y se guarda automÃ¡ticamente",
     body: "Completa la ficha, adjunta PDF o imÃ¡genes y descarga el machote universal. El botÃ³n de ayuda abre este tutorial cuando lo necesites.",
   },
+  {
+    eyebrow: "5 DE 5 Â· SONIDO Y RESPALDO LOCAL",
+    title: "Personaliza la experiencia y conserva copias",
+    body: "Configura sonidos y volumen desde la bocina. Cada dispositivo guarda automÃ¡ticamente una copia diaria del mapa y conserva sÃ³lo las Ãºltimas tres.",
+  },
 ];
 
-function Icon({ name }: { name: "map" | "org" | "help" | "pdf" | "share" | "plus" | "close" | "arrow" }) {
+function Icon({ name }: { name: "map" | "org" | "help" | "pdf" | "share" | "plus" | "close" | "arrow" | "sound" | "mute" | "backup" | "fit" | "panel" }) {
   const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   if (name === "map") return <svg {...common}><path d="m3 6 5-2 8 3 5-2v13l-5 2-8-3-5 2Z" /><path d="M8 4v13M16 7v13" /></svg>;
   if (name === "org") return <svg {...common}><rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" /><path d="M12 8v4M6 16v-4h12v4" /></svg>;
@@ -202,605 +347,25 @@ function Icon({ name }: { name: "map" | "org" | "help" | "pdf" | "share" | "plus
   if (name === "share") return <svg {...common}><circle cx="18" cy="5" r="2" /><circle cx="6" cy="12" r="2" /><circle cx="18" cy="19" r="2" /><path d="m8 11 8-5M8 13l8 5" /></svg>;
   if (name === "plus") return <svg {...common}><path d="M12 5v14M5 12h14" /></svg>;
   if (name === "close") return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /></svg>;
+  if (name === "sound") return <svg {...common}><path d="M11 5 6 9H3v6h3l5 4Z" /><path d="M15 9a4 4 0 0 1 0 6M17.7 6.3a8 8 0 0 1 0 11.4" /></svg>;
+  if (name === "mute") return <svg {...common}><path d="M11 5 6 9H3v6h3l5 4Z" /><path d="m16 10 5 5m0-5-5 5" /></svg>;
+  if (name === "backup") return <svg {...common}><path d="M4 7h12l4 4v8H4z" /><path d="M7 7V4h9v3M8 14h8M8 17h5" /></svg>;
+  if (name === "fit") return <svg {...common}><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /><path d="m3 8 5-5m8 0 5 5M3 16l5 5m8 0 5-5" /></svg>;
+  if (name === "panel") return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></svg>;
   return <svg {...common}><path d="m9 18 6-6-6-6" /></svg>;
 }
 
 function EditableNode({ id, data, selected }: NodeProps<MapNode>) {
   const { updateNodeData } = useReactFlow<MapNode, Edge>();
+  const updateNodeInternals = useUpdateNodeInternals();
   const meta = typeMeta[data.kind];
   const image = data.attachments.find((attachment) => attachment.type.startsWith("image/"));
-
-  const update = (field: keyof MapNodeData, value: string) => {
-    updateNodeData(id, { [field]: value } as Partial<MapNodeData>);
-  };
-
-  return (
-    <article className={`orvel-node orvel-node-${data.kind} ${selected ? "is-selected" : ""}`}>
-      <Handle type="target" position={Position.Left} />
-      <div className="node-accent" style={{ background: meta.color }} />
-      <div className="node-main">
-        {image ? (
-          <Image className="node-avatar" src={image.url} alt="" width={37} height={37} unoptimized />
-        ) : (
-          <span className="node-kind" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
-        )}
-        <div className="node-editable-copy">
-          <input className="nodrag node-code-input" value={data.code} onChange={(event) => update("code", event.target.value)} aria-label="CÃ³digo del nodo" />
-          <input className="nodrag node-name-input" value={data.name} onChange={(event) => update("name", event.target.value)} aria-label="Nombre del nodo" />
-        </div>
-      </div>
-      <div className="node-footer">
-        <span className="node-type-label" style={{ color: meta.color, background: `${meta.color}12` }}>{meta.label}</span>
-        {data.duration ? <span>{data.duration}</span> : <span>Ficha editable</span>}
-      </div>
-      <Handle type="source" position={Position.Right} />
-    </article>
-  );
-}
-
-const nodeTypes = { editable: EditableNode } satisfies NodeTypes;
-
-function cloneDefaultDocument(): MapDocument {
-  return JSON.parse(JSON.stringify(defaultDocument)) as MapDocument;
-}
-
-function readLocalDocument(): MapDocument | null {
-  try {
-    const value = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-    return value ? JSON.parse(value) as MapDocument : null;
-  } catch {
-    return null;
-  }
-}
-
-function isLegacyDemo(document: MapDocument | null): boolean {
-  return Boolean(document && document.version < 3 && document.processName === "Desarrollo y aprobaciÃ³n de etiquetas");
-}
-
-function normalizeDocument(document: MapDocument): MapDocument {
-  return {
-    version: 3,
-    processName: document.processName || defaultDocument.processName,
-    department: document.department || defaultDocument.department,
-    nodes: document.nodes.map((node) => ({
-      ...node,
-      type: "editable",
-      data: nodeData(node.data),
-    })),
-    edges: document.edges ?? [],
-  };
-}
-
-function edgeStyleFor(source: MapNode | undefined, target: MapNode | undefined) {
-  const thinKinds = new Set<NodeKind>(["person", "system", "manual"]);
-  if ((source && thinKinds.has(source.data.kind)) || (target && thinKinds.has(target.data.kind))) return supportEdge;
-  if (source?.data.kind === "process" || target?.data.kind === "process") return subprocessEdge;
-  return mainEdge;
-}
-
-function MapExperience() {
-  const [nodes, setNodes, onNodesChange] = useNodesState<MapNode>(defaultDocument.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(defaultDocument.edges);
-  const [selectedId, setSelectedId] = useState("root");
-  const [query, setQuery] = useState("");
-  const [hiddenKinds, setHiddenKinds] = useState<NodeKind[]>([]);
-  const [processName, setProcessName] = useState(defaultDocument.processName);
-  const [department, setDepartment] = useState(defaultDocument.department);
-  const [saveState, setSaveState] = useState("Conectandoâ€¦");
-  const [loaded, setLoaded] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>("map");
-  const [creationOpen, setCreationOpen] = useState(false);
-  const [connectionMode, setConnectionMode] = useState(false);
-  const [connectionSource, setConnectionSource] = useState<string | null>(null);
-  const [tutorialOpen, setTutorialOpen] = useState(false);
-  const [tutorialStep, setTutorialStep] = useState(0);
-  const [saveRetry, setSaveRetry] = useState(0);
-  const uploadRef = useRef<HTMLInputElement>(null);
-  const serverDocumentRef = useRef("");
-  const currentDocumentRef = useRef("");
-  const dirtyRef = useRef(false);
-  const { fitView } = useReactFlow<MapNode, Edge>();
+  const nameRows = Math.max(1, data.name.split("\n").reduce((total, line) => total + Math.max(1, Math.ceil((line.length || 1) / 25)), 0));
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadDocument() {
-      try {
-        const response = await fetch("/api/map", { cache: "no-store" });
-        if (!response.ok) throw new Error("No se pudo cargar el mapa");
-        const payload = await response.json() as { document: MapDocument | null };
-        const stored = payload.document ?? readLocalDocument();
-        const document = isLegacyDemo(stored) ? cloneDefaultDocument() : stored;
-        if (!cancelled && document?.nodes?.length) {
-          const normalized = normalizeDocument(document);
-          const signature = JSON.stringify(normalized);
-          serverDocumentRef.current = payload.document ? signature : "";
-          currentDocumentRef.current = signature;
-          dirtyRef.current = !payload.document;
-          setNodes(normalized.nodes);
-          setEdges(normalized.edges);
-          setProcessName(normalized.processName);
-          setDepartment(normalized.department);
-          setSelectedId(normalized.nodes[0].id);
-        }
-        if (!cancelled) setSaveState(payload.document && !isLegacyDemo(payload.document) ? "Datos sincronizados" : "Plantilla lista");
-      } catch {
-        const local = readLocalDocument();
-        if (!cancelled && local?.nodes?.length) {
-          const normalized = normalizeDocument(local);
-          currentDocumentRef.current = JSON.stringify(normalized);
-          dirtyRef.current = true;
-          setNodes(normalized.nodes);
-          setEdges(normalized.edges);
-          setProcessName(normalized.processName);
-          setDepartment(normalized.department);
-          setSelectedId(normalized.nodes[0].id);
-        }
-        if (!cancelled) setSaveState("Guardado local");
-      } finally {
-        if (!cancelled) {
-          setLoaded(true);
-          if (!window.localStorage.getItem(TUTORIAL_STORAGE_KEY)) setTutorialOpen(true);
-        }
-      }
-    }
-
-    void loadDocument();
-    return () => { cancelled = true; };
-  }, [setEdges, setNodes]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    const document: MapDocument = {
-      version: 3,
-      processName,
-      department,
-      nodes: nodes.map((node) => ({ id: node.id, type: "editable", position: node.position, data: node.data })),
-      edges,
-    };
-    const serialized = JSON.stringify(document);
-    currentDocumentRef.current = serialized;
-    if (serialized === serverDocumentRef.current) {
-      dirtyRef.current = false;
-      return;
-    }
-
-    dirtyRef.current = true;
-    const timer = window.setTimeout(async () => {
-      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(document));
-      setSaveState("Guardandoâ€¦");
-      try {
-        const response = await fetch("/api/map", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(document),
-        });
-        if (!response.ok) throw new Error("No se pudo guardar");
-        serverDocumentRef.current = serialized;
-        dirtyRef.current = currentDocumentRef.current !== serialized;
-        setSaveState("Datos sincronizados");
-      } catch {
-        setSaveState("Guardado local");
-        window.setTimeout(() => setSaveRetry((current) => current + 1), 4000);
-      }
-    }, 850);
-    return () => window.clearTimeout(timer);
-  }, [department, edges, loaded, nodes, processName, saveRetry]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    let cancelled = false;
-
-    const pullSharedChanges = async () => {
-      if (dirtyRef.current) return;
-      try {
-        const response = await fetch("/api/map", { cache: "no-store" });
-        if (!response.ok) return;
-        const payload = await response.json() as { document: MapDocument | null };
-        if (cancelled || !payload.document?.nodes?.length || dirtyRef.current) return;
-
-        const normalized = normalizeDocument(payload.document);
-        const signature = JSON.stringify(normalized);
-        if (signature === serverDocumentRef.current) return;
-
-        serverDocumentRef.current = signature;
-        currentDocumentRef.current = signature;
-        dirtyRef.current = false;
-        setNodes(normalized.nodes);
-        setEdges(normalized.edges);
-        setProcessName(normalized.processName);
-        setDepartment(normalized.department);
-        setSelectedId((current) => normalized.nodes.some((node) => node.id === current) ? current : normalized.nodes[0].id);
-        window.localStorage.setItem(LOCAL_STORAGE_KEY, signature);
-        setSaveState("Datos sincronizados");
-      } catch {
-        // El respaldo local permanece disponible mientras regresa la conexiÃ³n.
-      }
-    };
-
-    const interval = window.setInterval(() => void pullSharedChanges(), 3000);
-    const onFocus = () => void pullSharedChanges();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [loaded, setEdges, setNodes]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void fitView({ padding: 0.25, minZoom: 0.42, maxZoom: 1 }), 80);
-    return () => window.clearTimeout(timer);
-  }, [fitView, viewMode]);
-
-  useEffect(() => {
-    setEdges((current) => current.map((edge) => ({
-      ...edge,
-      ...edgeStyleFor(
-        nodes.find((node) => node.id === edge.source),
-        nodes.find((node) => node.id === edge.target),
-      ),
-    })));
-  }, [nodes, setEdges]);
-
-  const createStyledEdge = useCallback((sourceId: string, targetId: string, label = "se relaciona con") => {
-    if (sourceId === targetId) return;
-    const source = nodes.find((node) => node.id === sourceId);
-    const target = nodes.find((node) => node.id === targetId);
-    setEdges((current) => addEdge({
-      id: `e-${sourceId}-${targetId}-${Date.now()}`,
-      source: sourceId,
-      target: targetId,
-      label,
-      ...edgeStyleFor(source, target),
-    }, current));
-  }, [nodes, setEdges]);
-
-  const onConnect = useCallback((connection: Connection) => {
-    if (!connection.source || !connection.target) return;
-    createStyledEdge(connection.source, connection.target);
-  }, [createStyledEdge]);
-
-  const visibleNodes = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase("es");
-    return nodes.map((node) => ({
-      ...node,
-      hidden:
-        (viewMode === "org" && node.data.kind !== "person") ||
-        hiddenKinds.includes(node.data.kind) ||
-        (normalized.length > 0 && ![node.data.name, node.data.code, node.data.owner, node.data.kind]
-          .some((value) => value.toLocaleLowerCase("es").includes(normalized))),
-    }));
-  }, [hiddenKinds, nodes, query, viewMode]);
-
-  const visibleEdges = useMemo(() => viewMode === "map"
-    ? edges
-    : edges.filter((edge) => nodes.find((node) => node.id === edge.source)?.data.kind === "person" && nodes.find((node) => node.id === edge.target)?.data.kind === "person"),
-  [edges, nodes, viewMode]);
-
-  const selected = nodes.find((node) => node.id === selectedId) ?? nodes[0];
-
-  const updateSelected = useCallback((field: keyof MapNodeData, value: string | Attachment[]) => {
-    if (!selected) return;
-    setNodes((current) => current.map((node) => node.id === selected.id ? { ...node, data: { ...node.data, [field]: value } } : node));
-  }, [selected, setNodes]);
-
-  const addNode = useCallback((choice: Exclude<CreationChoice, "connection">) => {
-    const number = nodes.length + 1;
-    const id = `node-${Date.now()}`;
-    const anchor = selected?.position ?? { x: 420, y: 260 };
-    const horizontal = choice === "activity" || choice === "output" || choice === "control";
-    const above = choice === "person";
-    const below = choice === "system" || choice === "manual" || choice === "process";
-    const position = horizontal
-      ? { x: anchor.x + 320, y: anchor.y + ((number % 3) - 1) * 32 }
-      : { x: anchor.x + ((number % 3) - 1) * 95, y: anchor.y + (above ? -210 : below ? 210 : 0) };
-    const labels: Record<NodeKind, string> = {
-      activity: "Nueva etapa principal",
-      process: "Nuevo subproceso",
-      person: "Persona o puesto",
-      system: "Sistema o programa",
-      manual: "Documento o formato",
-      control: "Control o decisiÃ³n",
-      output: "Salida del proceso",
-    };
-    const prefixes: Record<NodeKind, string> = { activity: "AC", process: "SP", person: "PE", system: "SI", manual: "DO", control: "CO", output: "SA" };
-    const newNode: MapNode = {
-      id,
-      type: "editable",
-      position,
-      data: nodeData({
-        name: labels[choice],
-        kind: choice,
-        code: `${prefixes[choice]}-${String(number).padStart(3, "0")}`,
-        description: `Completa la ficha de ${labels[choice].toLocaleLowerCase("es")}.`,
-      }),
-    };
-    setNodes((current) => [...current, newNode]);
-    if (selected) {
-      setEdges((current) => addEdge({
-        id: `e-${selected.id}-${id}-${Date.now()}`,
-        source: selected.id,
-        target: id,
-        label: choice === "activity" ? "continÃºa con" : choice === "process" ? "se desglosa en" : "utiliza / participa",
-        ...edgeStyleFor(selected, newNode),
-      }, current));
-    }
-    setSelectedId(id);
-    setConnectionMode(false);
-    setCreationOpen(false);
-    window.setTimeout(() => void fitView({ padding: 0.25, maxZoom: 1 }), 80);
-  }, [fitView, nodes.length, selected, setEdges, setNodes]);
-
-  const chooseCreation = useCallback((choice: CreationChoice) => {
-    if (choice === "connection") {
-      setCreationOpen(false);
-      setConnectionMode(true);
-      setConnectionSource(null);
-      setSaveState("ConexiÃ³n: elige el origen");
-      return;
-    }
-    addNode(choice);
-  }, [addNode]);
-
-  const handleNodeClick = useCallback((node: MapNode) => {
-    setSelectedId(node.id);
-    if (connectionMode) {
-      if (!connectionSource) {
-        setConnectionSource(node.id);
-        setSaveState("ConexiÃ³n: elige el destino");
-      } else if (connectionSource !== node.id) {
-        createStyledEdge(connectionSource, node.id);
-        setConnectionMode(false);
-        setConnectionSource(null);
-        setSaveState("ConexiÃ³n creada");
-      }
-    }
-  }, [connectionMode, connectionSource, createStyledEdge]);
-
-  const deleteSelected = useCallback(() => {
-    if (!selected || nodes.length === 1) return;
-    const next = nodes.find((node) => node.id !== selected.id);
-    setNodes((current) => current.filter((node) => node.id !== selected.id));
-    setEdges((current) => current.filter((edge) => edge.source !== selected.id && edge.target !== selected.id));
-    if (next) setSelectedId(next.id);
-  }, [nodes, selected, setEdges, setNodes]);
-
-  const toggleKind = useCallback((kind: NodeKind) => {
-    setHiddenKinds((current) => current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]);
-  }, []);
-
-  const uploadFiles = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    if (!selected || !event.target.files?.length) return;
-    setUploading(true);
-    try {
-      for (const file of Array.from(event.target.files)) {
-        const formData = new FormData();
-        formData.append("file", file);
-        const response = await fetch("/api/uploads", { method: "POST", body: formData });
-        const payload = await response.json() as { attachment?: Attachment; error?: string };
-        if (!response.ok || !payload.attachment) throw new Error(payload.error || "No se pudo subir el archivo");
-        setNodes((current) => current.map((node) => node.id === selected.id
-          ? { ...node, data: { ...node.data, attachments: [...node.data.attachments, payload.attachment as Attachment] } }
-          : node));
-      }
-      setSaveState("Archivo agregado");
-    } catch (error) {
-      setSaveState(error instanceof Error ? error.message : "Error al subir archivo");
-    } finally {
-      setUploading(false);
-      event.target.value = "";
-    }
-  }, [selected, setNodes]);
-
-  const removeAttachment = useCallback((attachment: Attachment) => {
-    if (!selected) return;
-    updateSelected("attachments", selected.data.attachments.filter((item) => item.id !== attachment.id));
-    if (!attachment.static) void fetch(`/api/uploads/${attachment.id}`, { method: "DELETE" });
-  }, [selected, updateSelected]);
-
-  const share = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(window.location.href);
-      setSaveState("Enlace copiado");
-    } catch {
-      setSaveState("Copia la direcciÃ³n del navegador");
-    }
-  }, []);
-
-  const openTutorial = useCallback(() => {
-    setTutorialStep(0);
-    setTutorialOpen(true);
-  }, []);
-
-  const closeTutorial = useCallback(() => {
-    window.localStorage.setItem(TUTORIAL_STORAGE_KEY, "seen");
-    setTutorialOpen(false);
-  }, []);
-
-  const resetBlank = useCallback(() => {
-    if (!window.confirm("Esto reemplazarÃ¡ el mapa actual por un machote vacÃ­o. Â¿Continuar?")) return;
-    const blank = cloneDefaultDocument();
-    setNodes(blank.nodes);
-    setEdges(blank.edges);
-    setProcessName(blank.processName);
-    setDepartment(blank.department);
-    setSelectedId("root");
-    setConnectionMode(false);
-    setConnectionSource(null);
-    setCreationOpen(false);
-    setSaveState("Machote vacÃ­o cargado");
-    window.setTimeout(() => void fitView({ padding: 0.3, maxZoom: 1 }), 80);
-  }, [fitView, setEdges, setNodes]);
-
-  return (
-    <main className="map-app">
-      <aside className="rail" aria-label="Vistas principales">
-        <div className="logo">DO</div>
-        <nav>
-          <button className={viewMode === "map" ? "active" : ""} title="Mapa de procesos" aria-label="Mapa de procesos" onClick={() => setViewMode("map")}><Icon name="map" /></button>
-          <button className={viewMode === "org" ? "active" : ""} title="Organigrama" aria-label="Organigrama" onClick={() => setViewMode("org")}><Icon name="org" /></button>
-        </nav>
-        <button className="rail-avatar" title="SesiÃ³n activa">CG</button>
-      </aside>
-
-      <section className="map-workspace">
-        <header className="map-header">
-          <div className="brand-block">
-            <div className="breadcrumb">DISTRIBUCIONES ORVEL / {viewMode === "map" ? "MAPA GENERAL" : "ORGANIGRAMA"}</div>
-            <h1>Mapa de Proceso Distribuciones Orvel</h1>
-          </div>
-          <label className="map-search">
-            <span aria-hidden="true">âŒ•</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar nodo, persona o cÃ³digoâ€¦" aria-label="Buscar en el mapa" />
-          </label>
-          <span className={`sync-pill ${saveState === "Datos sincronizados" ? "is-synced" : ""}`}><i />{saveState}</span>
-          <div className="header-buttons">
-            <a className="icon-action" href={TEMPLATE_PDF} download title="Descargar machote PDF" aria-label="Descargar machote PDF"><Icon name="pdf" /></a>
-            <button className="icon-action" onClick={openTutorial} title="Abrir tutorial" aria-label="Abrir tutorial"><Icon name="help" /></button>
-            <button className="icon-action" onClick={share} title="Copiar enlace" aria-label="Copiar enlace"><Icon name="share" /></button>
-            <button className="navy-button add-button" onClick={() => setCreationOpen(true)}><Icon name="plus" />Agregar</button>
-          </div>
-        </header>
-
-        <div className="map-body">
-          <section className="graph-panel" aria-label={viewMode === "map" ? "Mapa general del proceso" : "Organigrama"}>
-            <div className="graph-heading">
-              <div><span className="map-symbol"><Icon name={viewMode === "map" ? "map" : "org"} /></span>{viewMode === "map" ? "MAPA GENERAL" : "ORGANIGRAMA"}</div>
-              <input value={processName} onChange={(event) => setProcessName(event.target.value)} aria-label="Nombre del proceso" />
-              <input value={department} onChange={(event) => setDepartment(event.target.value)} aria-label="Ãrea del proceso" />
-              <span>{viewMode === "map" ? `${nodes.length} nodos Â· ${edges.length} conexiones` : `${nodes.filter((node) => node.data.kind === "person").length} personas / puestos`}</span>
-            </div>
-            {viewMode === "map" && (
-              <div className="type-filters" aria-label="Filtros por tipo de nodo">
-                {(Object.entries(typeMeta) as [NodeKind, (typeof typeMeta)[NodeKind]][]).map(([kind, meta]) => (
-                  <button key={kind} className={hiddenKinds.includes(kind) ? "muted" : ""} onClick={() => toggleKind(kind)}><i style={{ background: meta.color }} />{meta.label}</button>
-                ))}
-              </div>
-            )}
-            <ReactFlow<MapNode, Edge>
-              nodes={visibleNodes}
-              edges={visibleEdges}
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              onNodeClick={(_, node) => handleNodeClick(node)}
-              fitView
-              fitViewOptions={{ padding: 0.24, minZoom: 0.52, maxZoom: 1 }}
-              minZoom={0.25}
-              maxZoom={1.7}
-              nodesDraggable
-              nodesConnectable
-              elementsSelectable
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background color="#b7c8da" gap={24} size={1.15} variant={BackgroundVariant.Dots} />
-              <Controls showInteractive={false} position="bottom-left" />
-              <MiniMap position="bottom-right" nodeColor={(node) => typeMeta[node.data?.kind as NodeKind]?.color ?? "#68819a"} maskColor="rgba(232, 239, 246, .76)" />
-            </ReactFlow>
-            {viewMode === "org" && !nodes.some((node) => node.data.kind === "person") && (
-              <div className="empty-org"><Icon name="org" /><strong>El organigrama todavÃ­a estÃ¡ vacÃ­o</strong><span>Agrega nodos de persona o puesto y conÃ©ctalos para construirlo.</span><button onClick={() => setCreationOpen(true)}>Agregar persona</button></div>
-            )}
-            {connectionMode && (
-              <div className="connection-banner"><span>{connectionSource ? "2" : "1"}</span>{connectionSource ? "ConexiÃ³n: elige el destino" : "ConexiÃ³n: elige el origen"}<button onClick={() => { setConnectionMode(false); setConnectionSource(null); setSaveState("ConexiÃ³n cancelada"); }}>Cancelar</button></div>
-            )}
-            <div className="map-hint"><span>Edita dentro de cada tarjeta</span><span>Arrastra para ordenar</span><span>Personas y sistemas usan lÃ­neas delgadas</span></div>
-          </section>
-
-          {selected && (
-            <aside className="node-inspector">
-              <div className="inspector-titlebar">
-                <div><small>FICHA GENERAL EDITABLE</small><h2>{selected.data.name}</h2></div>
-                <span className="kind-badge" style={{ color: typeMeta[selected.data.kind].color, background: `${typeMeta[selected.data.kind].color}14` }}>{typeMeta[selected.data.kind].label}</span>
-              </div>
-              <div className="inspector-form">
-                <label className="field field-wide"><span>Nombre</span><input value={selected.data.name} onChange={(event) => updateSelected("name", event.target.value)} /></label>
-                <label className="field"><span>CÃ³digo</span><input value={selected.data.code} onChange={(event) => updateSelected("code", event.target.value)} /></label>
-                <label className="field"><span>Tipo de nodo</span><select value={selected.data.kind} onChange={(event) => updateSelected("kind", event.target.value as NodeKind)}>{(Object.entries(typeMeta) as [NodeKind, (typeof typeMeta)[NodeKind]][]).map(([kind, meta]) => <option key={kind} value={kind}>{meta.label}</option>)}</select></label>
-                <label className="field"><span>Responsable</span><input value={selected.data.owner} onChange={(event) => updateSelected("owner", event.target.value)} placeholder="Nombre o puesto" /></label>
-                <label className="field"><span>Puesto / funciÃ³n</span><input value={selected.data.role} onChange={(event) => updateSelected("role", event.target.value)} /></label>
-                <label className="field field-wide"><span>Ãrea</span><input value={selected.data.department} onChange={(event) => updateSelected("department", event.target.value)} /></label>
-                <label className="field"><span>Correo</span><input type="email" value={selected.data.email} onChange={(event) => updateSelected("email", event.target.value)} /></label>
-                <label className="field"><span>TelÃ©fono</span><input value={selected.data.phone} onChange={(event) => updateSelected("phone", event.target.value)} /></label>
-                <label className="field field-wide"><span>DuraciÃ³n / frecuencia, si aplica</span><input value={selected.data.duration} onChange={(event) => updateSelected("duration", event.target.value)} placeholder="Ej. 45 min, mensual o bajo demanda" /></label>
-                <label className="field field-wide"><span>Objetivo</span><textarea value={selected.data.objective} onChange={(event) => updateSelected("objective", event.target.value)} rows={3} placeholder="Â¿QuÃ© resultado debe lograr este elemento?" /></label>
-                <label className="field"><span>Entradas</span><textarea value={selected.data.inputs} onChange={(event) => updateSelected("inputs", event.target.value)} rows={3} /></label>
-                <label className="field"><span>Salidas</span><textarea value={selected.data.outputs} onChange={(event) => updateSelected("outputs", event.target.value)} rows={3} /></label>
-                <label className="field field-wide"><span>DescripciÃ³n e instrucciones</span><textarea value={selected.data.description} onChange={(event) => updateSelected("description", event.target.value)} rows={5} placeholder="Explica quÃ© se hace, criterios, excepciones y observacionesâ€¦" /></label>
-              </div>
-
-              <section className="attachments-section">
-                <div className="section-heading">
-                  <div><small>ARCHIVOS</small><strong>PDF e imÃ¡genes de apoyo</strong></div>
-                  <button onClick={() => uploadRef.current?.click()} disabled={uploading}>{uploading ? "Subiendoâ€¦" : "+ Agregar"}</button>
-                </div>
-                <input ref={uploadRef} hidden type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" onChange={uploadFiles} />
-                {selected.data.attachments.length ? (
-                  <div className="attachment-list">
-                    {selected.data.attachments.map((attachment) => (
-                      <div className="attachment" key={attachment.id}>
-                        {attachment.type.startsWith("image/") ? <Image src={attachment.url} alt="" width={38} height={38} unoptimized /> : <span className="pdf-icon">PDF</span>}
-                        <a href={attachment.url} target="_blank" rel="noreferrer"><strong>{attachment.name}</strong><small>{attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : "Machote precargado"}</small></a>
-                        <button aria-label={`Quitar ${attachment.name}`} onClick={() => removeAttachment(attachment)}>Ã—</button>
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="empty-files">Agrega procedimientos, formatos, evidencias o imÃ¡genes. Las fotos de personas tambiÃ©n aparecen en su tarjeta.</p>}
-              </section>
-
-              <div className="connection-strip">
-                <div><b>{edges.filter((edge) => edge.source === selected.id).length}</b><span>Salientes</span></div>
-                <div><b>{edges.filter((edge) => edge.target === selected.id).length}</b><span>Entrantes</span></div>
-                <div><b>{selected.data.attachments.length}</b><span>Archivos</span></div>
-              </div>
-              <button className="delete-node" onClick={deleteSelected} disabled={nodes.length === 1}>Eliminar nodo</button>
-            </aside>
-          )}
-        </div>
-      </section>
-
-      {creationOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreationOpen(false); }}>
-          <section className="creation-modal" role="dialog" aria-modal="true" aria-labelledby="creation-title">
-            <button className="modal-close" onClick={() => setCreationOpen(false)} aria-label="Cerrar"><Icon name="close" /></button>
-            <small>CONSTRUIR EL MAPA</small>
-            <h2 id="creation-title">Â¿QuÃ© quieres agregar?</h2>
-            <p>Se conectarÃ¡ con <strong>{selected?.data.name ?? "el nodo seleccionado"}</strong>. Puedes moverlo y editarlo despuÃ©s.</p>
-            <div className="creation-grid">
-              {creationOrder.map((choice) => {
-                const meta = creationMeta[choice];
-                return <button key={choice} onClick={() => chooseCreation(choice)}><span style={{ color: meta.color, background: `${meta.color}14` }}>{meta.short}</span><div><strong>{meta.label}</strong><small>{meta.description}</small></div><Icon name="arrow" /></button>;
-              })}
-            </div>
-            <button className="blank-reset" onClick={resetBlank}>Empezar un mapa nuevo en blanco</button>
-          </section>
-        </div>
-      )}
-
-      {tutorialOpen && (
-        <div className="modal-backdrop tutorial-backdrop">
-          <section className="tutorial-modal" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
-            <button className="modal-close" onClick={closeTutorial} aria-label="Cerrar tutorial"><Icon name="close" /></button>
-            <div className="tutorial-visual"><span><Icon name={tutorialStep === 0 ? "map" : tutorialStep === 3 ? "pdf" : "org"} /></span><div className="tutorial-lines"><i /><i /><i /></div></div>
-            <div className="tutorial-copy">
-              <small>{tutorialSteps[tutorialStep].eyebrow}</small>
-              <h2 id="tutorial-title">{tutorialSteps[tutorialStep].title}</h2>
-              <p>{tutorialSteps[tutorialStep].body}</p>
-              <div className="tutorial-dots">{tutorialSteps.map((_, index) => <i key={index} className={index === tutorialStep ? "active" : ""} />)}</div>
-              <div className="tutorial-actions">
-                <button className="ghost-button" onClick={closeTutorial}>Saltar todo</button>
-                <button className="navy-button" onClick={() => tutorialStep === tutorialSteps.length - 1 ? closeTutorial() : setTutorialStep((current) => current + 1)}>{tutorialStep === tutorialSteps.length - 1 ? "Empezar" : "Siguiente"}</button>
-              </div>
-            </div>
-          </section>
-        </div>
-      )}
-    </main>
-  );
-}
-
-export default function ProcessMap() {
-  return <ReactFlowProvider><MapExperience /></ReactFlowProvider>;
-}
+    updateNodeInternals(id);
+  }, [data.óM·¶‰ËkºwµçU¼µ•…¹¥¼ğ½ÍÁ…¸øñ¥¹ÁÕĞÑåÁ”ô‰¡•­‰½àˆ¡•­•õíÍ½Õ¹‘M•ÑÑ¥¹Ì¹ÑåÁ¥¹ô‘¥Í…‰±•õì…Í½Õ¹‘M•ÑÑ¥¹Ì¹•¹…‰±•‘ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÍ•ÑM½Õ¹‘M•ÑÑ¥¹Ì ¡ÕÉÉ•¹Ğ¤€ôø€¡ì€¸¸¹ÕÉÉ•¹Ğ°ÑåÁ¥¹œè•Ù•¹Ğ¹Ñ…É•Ğ¹¡•­•ô¤¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰Ù½±Õµ”µÉ½ÜˆøñÍÁ…¸ùY½±Õµ•¸ğ½ÍÁ…¸øñ¥¹ÁÕĞÑåÁ”ô‰É…¹”ˆµ¥¸ôˆÀ¸Ààˆµ…àôˆÀ¸ÔˆÍÑ•ÀôˆÀ¸ÀÈˆÙ…±Õ”õíÍ½Õ¹‘M•ÑÑ¥¹Ì¹Ù½±Õµ•ô‘¥Í…‰±•õì…Í½Õ¹‘M•ÑÑ¥¹Ì¹•¹…‰±•‘ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÍ•ÑM½Õ¹‘M•ÑÑ¥¹Ì ¡ÕÉÉ•¹Ğ¤€ôø€¡ì€¸¸¹ÕÉÉ•¹Ğ°Ù½±Õµ”è9Õµ‰•È¡•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¤ô¤¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€¥ô(€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€ğ½¡•…‘•Èø((€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”õíµ…Àµ‰½‘ä€‘í¥¹ÍÁ•Ñ½É=Á•¸€ü€ˆˆ€è€‰¥¹ÍÁ•Ñ½Èµ¡¥‘‘•¸‰õôø(€€€€€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É…Á µÁ…¹•°ˆ…É¥„µ±…‰•°õíÙ¥•İ5½‘”€ôôô€‰µ…Àˆ€ü€‰5…Á„•¹•É…°‘•°ÁÉ½•Í¼ˆ€è€‰=É…¹¥É…µ„‰ôø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰É…Á µ¡•…‘¥¹œˆø(€€€€€€€€€€€€€€ñ‘¥ØøñÍÁ…¸±…ÍÍ9…µ”ô‰µ…ÀµÍåµ‰½°ˆøñ%½¸¹…µ”õíÙ¥•İ5½‘”€ôôô€‰µ…Àˆ€ü€‰µ…Àˆ€è€‰½Éœ‰ô€¼øğ½ÍÁ…¸ùíÙ¥•İ5½‘”€ôôô€‰µ…Àˆ€ü€‰5A9I0ˆ€è€‰=I9%I5‰ôğ½‘¥Øø(€€€€€€€€€€€€€€ñ¥¹ÁÕĞÙ…±Õ”õíÁÉ½•ÍÍ9…µ•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÍ•ÑAÉ½•ÍÍ9…µ”¡•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô…É¥„µ±…‰•°ô‰9½µ‰É”‘•°ÁÉ½•Í¼ˆ€¼ø(€€€€€€€€€€€€€€ñ¥¹ÁÕĞÙ…±Õ”õí‘•Á…ÉÑµ•¹Ñô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÍ•Ñ•Á…ÉÑµ•¹Ğ¡•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô…É¥„µ±…‰•°ô‹É•„‘•°ÁÉ½•Í¼ˆ€¼ø(€€€€€€€€€€€€€€ñÍÁ…¸ùíÙ¥•İ5½‘”€ôôô€‰µ…Àˆ€ü€‘í¹½‘•Ì¹±•¹Ñ¡ô¹½‘½Ìƒ
+Ü€‘í•‘•Ì¹±•¹Ñ¡ô½¹•á¥½¹•Í€€è€‘í¹½‘•Ì¹™¥±Ñ•È ¡¹½‘”¤€ôø¹½‘”¹‘…Ñ„¹­¥¹€ôôô€‰Á•ÉÍ½¸ˆ¤¹±•¹Ñ¡ôÁ•ÉÍ½¹…Ì€¼ÁÕ•ÍÑ½Íôğ½ÍÁ…¸ø(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€íÙ¥•İ5½‘”€ôôô€‰µ…Àˆ€˜˜€ (€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÑåÁ”µ™¥±Ñ•ÉÌˆ…É¥„µ±…‰•°ô‰¥±ÑÉ½ÌÁ½ÈÑ¥Á¼‘”¹½‘¼ˆø(€€€€€€€€€€€€€€€ì¡=‰©•Ğ¹•¹ÑÉ¥•Ì¡ÑåÁ•5•Ñ„¤…Ìm9½‘•-¥¹°€¡ÑåÁ•½˜ÑåÁ•5•Ñ„¥m9½‘•-¥¹‘uumt¤¹µ…À ¡m­¥¹°µ•Ñ…t¤€ôø€ (€€€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸­•äõí­¥¹‘ô±…ÍÍ9…µ”õí¡¥‘‘•¹-¥¹‘Ì¹¥¹±Õ‘•Ì¡­¥¹¤€ü€‰µÕÑ•ˆ€è€ˆ‰ô½¹±¥¬õì ¤€ôøÑ½±•-¥¹¡­¥¹¥ôøñ¤ÍÑå±”õíì‰…­É½Õ¹èµ•Ñ„¹½±½Èõô€¼ùíµ•Ñ„¹±…‰•±ôğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€¤¥ô(€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€¥ô(€€€€€€€€€€€€ñI•…Ñ±½Üñ5…Á9½‘”°‘”ø(€€€€€€€€€€€€€¹½‘•ÌõíÙ¥Í¥‰±•9½‘•Íô(€€€€€€€€€€€€€•‘•ÌõíÙ¥Í¥‰±•‘•Íô(€€€€€€€€€€€€€¹½‘•QåÁ•Ìõí¹½‘•QåÁ•Íô(€€€€€€€€€€€€€½¹9½‘•Í¡…¹”õí½¹9½‘•Í¡…¹•ô(€€€€€€€€€€€€€½¹‘•Í¡…¹”õí½¹‘•Í¡…¹•ô(€€€€€€€€€€€€€½¹½¹¹•Ğõí½¹½¹¹•Ñô(€€€€€€€€€€€€€½¹9½‘•±¥¬õì¡|°¹½‘”¤€ôø¡…¹‘±•9½‘•±¥¬¡¹½‘”¥ô(€€€€€€€€€€€€€™¥ÑY¥•Ü(€€€€€€€€€€€€€™¥ÑY¥•İ=ÁÑ¥½¹ÌõíìÁ…‘‘¥¹œè€À¸ÈĞ°µ¥¹i½½´è€À¸ÔÈ°µ…ái½½´è€Äõô(€€€€€€€€€€€€€µ¥¹i½½´õìÀ¸ÈÕô(€€€€€€€€€€€€€µ…ái½½´õìÄ¸İô(€€€€€€€€€€€€€¹½‘•ÍÉ……‰±”(€€€€€€€€€€€€€¹½‘•Í½¹¹•Ñ…‰±”(€€€€€€€€€€€€€•±•µ•¹ÑÍM•±•Ñ…‰±”(€€€€€€€€€€€€€ÁÉ½=ÁÑ¥½¹Ìõíì¡¥‘•ÑÑÉ¥‰ÕÑ¥½¸èÑÉÕ”õô(€€€€€€€€€€€€ø(€€€€€€€€€€€€€€ñ	…­É½Õ¹½±½ÈôˆˆİŒá‘„ˆ…ÀõìÈÑôÍ¥é”õìÄ¸ÄÕôÙ…É¥…¹Ğõí	…­É½Õ¹‘Y…É¥…¹Ğ¹½ÑÍô€¼ø(€€€€€€€€€€€€€€ñ½¹ÑÉ½±ÌÍ¡½İ%¹Ñ•É…Ñ¥Ù”õí™…±Í•ôÁ½Í¥Ñ¥½¸ô‰‰½ÑÑ½´µ±•™Ğˆ€¼ø(€€€€€€€€€€€€€€ñ5¥¹¥5…ÀÁ½Í¥Ñ¥½¸ô‰‰½ÑÑ½´µÉ¥¡Ğˆ¹½‘•½±½Èõì¡¹½‘”¤€ôøÑåÁ•5•Ñ…m¹½‘”¹‘…Ñ„ü¹­¥¹…Ì9½‘•-¥¹‘tü¹½±½È€üü€ˆŒØààÄå„‰ôµ…Í­½±½Èô‰É‰„ ÈÌÈ°€ÈÌä°€ÈĞØ°€¸ÜØ¤ˆ€¼ø(€€€€€€€€€€€€ğ½I•…Ñ±½Üø(€€€€€€€€€€€íÙ¥•İ5½‘”€ôôô€‰½Éœˆ€˜˜€…¹½‘•Ì¹Í½µ” ¡¹½‘”¤€ôø¹½‘”¹‘…Ñ„¹­¥¹€ôôô€‰Á•ÉÍ½¸ˆ¤€˜˜€ (€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰•µÁÑäµ½Éœˆøñ%½¸¹…µ”ô‰½Éœˆ€¼øñÍÑÉ½¹œù°½É…¹¥É…µ„Ñ½‘…Ûµ„•ÍÓ„Ù…µ¼ğ½ÍÑÉ½¹œøñÍÁ…¸ùÉ•„¹½‘½Ì‘”Á•ÉÍ½¹„¼ÁÕ•ÍÑ¼ä½»¥Ñ…±½ÌÁ…É„½¹ÍÑÉÕ¥É±¼¸ğ½ÍÁ…¸øñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôøÍ•ÑÉ•…Ñ¥½¹=Á•¸¡ÑÉÕ”¥ôùÉ•…ÈÁ•ÉÍ½¹„ğ½‰ÕÑÑ½¸øğ½‘¥Øø(€€€€€€€€€€€€¥ô(€€€€€€€€€€€í½¹¹•Ñ¥½¹5½‘”€˜˜€ (€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰½¹¹•Ñ¥½¸µ‰…¹¹•ÈˆøñÍÁ…¸ùí½¹¹•Ñ¥½¹M½ÕÉ”€ü€ˆÈˆ€è€ˆÄ‰ôğ½ÍÁ…¸ùí½¹¹•Ñ¥½¹M½ÕÉ”€ü€‰½¹•á§Í¸è•±¥”•°‘•ÍÑ¥¹¼ˆ€è€‰½¹•á§Í¸è•±¥”•°½É¥•¸‰ôñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôøìÍ•Ñ½¹¹•Ñ¥½¹5½‘”¡™…±Í”¤ìÍ•Ñ½¹¹•Ñ¥½¹M½ÕÉ”¡¹Õ±°¤ìÍ•ÑM…Ù•MÑ…Ñ” ‰½¹•á§Í¸…¹•±…‘„ˆ¤ìõôù…¹•±…Èğ½‰ÕÑÑ½¸øğ½‘¥Øø(€€€€€€€€€€€€¥ô(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ…Àµ…Ñ¥½¹Ìˆ…É¥„µ±…‰•°ô‰¥½¹•Ì‘•°µ…Á„ˆø(€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸½¹±¥¬õí™¥Ñ5…ÁôÑ¥Ñ±”ô‰©ÕÍÑ…Èµ…Á„½µÁ±•Ñ¼ˆøñ%½¸¹…µ”ô‰™¥Ğˆ€¼øñÍÁ…¸ù©ÕÍÑ…Èğ½ÍÁ…¸øğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€ì…¥¹ÍÁ•Ñ½É=Á•¸€˜˜Í•±•Ñ•€˜˜€ñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôøÍ•Ñ%¹ÍÁ•Ñ½É=Á•¸¡ÑÉÕ”¥ôÑ¥Ñ±”ô‰‰É¥È™¥¡„ˆøñ%½¸¹…µ”ô‰Á…¹•°ˆ€¼øñÍÁ…¸ù‰É¥È™¥¡„ğ½ÍÁ…¸øğ½‰ÕÑÑ½¸ùô(€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰µ…ÀµÁÉ¥µ…Éäµ…‘ˆ½¹±¥¬õì ¤€ôøÍ•ÑÉ•…Ñ¥½¹=Á•¸¡ÑÉÕ”¥ôøñ%½¸¹…µ”ô‰Á±ÕÌˆ€¼øñÍÁ…¸ùÉ•…È•±•µ•¹Ñ¼ğ½ÍÁ…¸øğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ…Àµ¡¥¹ĞˆøñÍÁ…¸ù‘¥Ñ„‘•¹ÑÉ¼‘”…‘„Ñ…É©•Ñ„ğ½ÍÁ…¸øñÍÁ…¸ùÉÉ…ÍÑÉ„Á…É„½É‘•¹…Èğ½ÍÁ…¸øñÍÁ…¸ùA•ÉÍ½¹…ÌäÍ¥ÍÑ•µ…ÌÕÍ…¸³µ¹•…Ì‘•±…‘…Ìğ½ÍÁ…¸øğ½‘¥Øø(€€€€€€€€€€ğ½Í•Ñ¥½¸ø((€€€€€€€€€íÍ•±•Ñ•€˜˜¥¹ÍÁ•Ñ½É=Á•¸€˜˜€ (€€€€€€€€€€€€ñ…Í¥‘”±…ÍÍ9…µ”ô‰¹½‘”µ¥¹ÍÁ•Ñ½Èˆø(€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰¥¹ÍÁ•Ñ½ÈµÑ¥Ñ±•‰…Èˆø(€€€€€€€€€€€€€€€€ñ‘¥ØøñÍµ…±°ù%!9I0%Q	1ğ½Íµ…±°øñ ÈùíÍ•±•Ñ•¹‘…Ñ„¹¹…µ•ôğ½ Èøğ½‘¥Øø(€€€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰¥¹ÍÁ•Ñ½ÈµÑ¥Ñ±”µ…Ñ¥½¹ÌˆøñÍÁ…¸±…ÍÍ9…µ”ô‰­¥¹µ‰…‘”ˆÍÑå±”õíì½±½ÈèÑåÁ•5•Ñ…mÍ•±•Ñ•¹‘…Ñ„¹­¥¹‘t¹½±½È°‰…­É½Õ¹è€‘íÑåÁ•5•Ñ…mÍ•±•Ñ•¹‘…Ñ„¹­¥¹‘t¹½±½ÉôÄÑ€õôùíÑåÁ•5•Ñ…mÍ•±•Ñ•¹‘…Ñ„¹­¥¹‘t¹±…‰•±ôğ½ÍÁ…¸øñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôøÍ•Ñ%¹ÍÁ•Ñ½É=Á•¸¡™…±Í”¥ôÑ¥Ñ±”ô‰•ÉÉ…È™¥¡„ˆ…É¥„µ±…‰•°ô‰•ÉÉ…È™¥¡„ˆøñ%½¸¹…µ”ô‰±½Í”ˆ€¼øğ½‰ÕÑÑ½¸øğ½‘¥Øø(€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰¥¹ÍÁ•Ñ½Èµ™½É´ˆø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±™¥•±µİ¥‘”ˆøñÍÁ…¸ù9½µ‰É”ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹¹…µ•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰¹…µ”ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùÍ‘¥¼ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹½‘•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰½‘”ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùQ¥Á¼‘”¹½‘¼ğ½ÍÁ…¸øñÍ•±•ĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹­¥¹‘ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰­¥¹ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”…Ì9½‘•-¥¹¥ôùì¡=‰©•Ğ¹•¹ÑÉ¥•Ì¡ÑåÁ•5•Ñ„¤…Ìm9½‘•-¥¹°€¡ÑåÁ•½˜ÑåÁ•5•Ñ„¥m9½‘•-¥¹‘uumt¤¹µ…À ¡m­¥¹°µ•Ñ…t¤€ôø€ñ½ÁÑ¥½¸­•äõí­¥¹‘ôÙ…±Õ”õí­¥¹‘ôùíµ•Ñ„¹±…‰•±ôğ½½ÁÑ¥½¸ø¥ôğ½Í•±•Ğøğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùI•ÍÁ½¹Í…‰±”ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹½İ¹•Éô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰½İ¹•Èˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÁ±…•¡½±‘•Èô‰9½µ‰É”¼ÁÕ•ÍÑ¼ˆ€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùAÕ•ÍÑ¼€¼™Õ¹§Í¸ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹É½±•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰É½±”ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±™¥•±µİ¥‘”ˆøñÍÁ…¸ûÉ•„ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹‘•Á…ÉÑµ•¹Ñô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰‘•Á…ÉÑµ•¹Ğˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ù½ÉÉ•¼ğ½ÍÁ…¸øñ¥¹ÁÕĞÑåÁ”ô‰•µ…¥°ˆÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹•µ…¥±ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰•µ…¥°ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùQ•³¥™½¹¼ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹Á¡½¹•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰Á¡½¹”ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±™¥•±µİ¥‘”ˆøñÍÁ…¸ùÕÉ…§Í¸€¼™É•Õ•¹¥„°Í¤…Á±¥„ğ½ÍÁ…¸øñ¥¹ÁÕĞÙ…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹‘ÕÉ…Ñ¥½¹ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰‘ÕÉ…Ñ¥½¸ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÁ±…•¡½±‘•Èô‰¨¸€ĞÔµ¥¸°µ•¹ÍÕ…°¼‰…©¼‘•µ…¹‘„ˆ€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±™¥•±µİ¥‘”ˆøñÍÁ…¸ù=‰©•Ñ¥Ù¼ğ½ÍÁ…¸øñÑ•áÑ…É•„Ù…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹½‰©•Ñ¥Ù•ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰½‰©•Ñ¥Ù”ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÉ½İÌõìÍôÁ±…•¡½±‘•Èô‹
+ıE×¤É•ÍÕ±Ñ…‘¼‘•‰”±½É…È•ÍÑ”•±•µ•¹Ñ¼üˆ€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ù¹ÑÉ…‘…Ìğ½ÍÁ…¸øñÑ•áÑ…É•„Ù…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹¥¹ÁÕÑÍô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰¥¹ÁÕÑÌˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÉ½İÌõìÍô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±ˆøñÍÁ…¸ùM…±¥‘…Ìğ½ÍÁ…¸øñÑ•áÑ…É•„Ù…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹½ÕÑÁÕÑÍô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰½ÕÑÁÕÑÌˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÉ½İÌõìÍô€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€€€ñ±…‰•°±…ÍÍ9…µ”ô‰™¥•±™¥•±µİ¥‘”ˆøñÍÁ…¸ù•ÍÉ¥Á§Í¸”¥¹ÍÑÉÕ¥½¹•Ìğ½ÍÁ…¸øñÑ•áÑ…É•„Ù…±Õ”õíÍ•±•Ñ•¹‘…Ñ„¹‘•ÍÉ¥ÁÑ¥½¹ô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÕÁ‘…Ñ•M•±•Ñ• ‰‘•ÍÉ¥ÁÑ¥½¸ˆ°•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ôÉ½İÌõìÕôÁ±…•¡½±‘•Èô‰áÁ±¥„Å×¤Í”¡…”°É¥Ñ•É¥½Ì°•á•Á¥½¹•Ìä½‰Í•ÉÙ…¥½¹•ÏŠ˜ˆ€¼øğ½±…‰•°ø(€€€€€€€€€€€€€€ğ½‘¥Øø((€€€€€€€€€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰…ÑÑ…¡µ•¹ÑÌµÍ•Ñ¥½¸ˆø(€€€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰Í•Ñ¥½¸µ¡•…‘¥¹œˆø(€€€€€€€€€€€€€€€€€€ñ‘¥ØøñÍµ…±°ùI!%Y=Lğ½Íµ…±°øñÍÑÉ½¹œùA”¥·…•¹•Ì‘”…Á½å¼ğ½ÍÑÉ½¹œøğ½‘¥Øø(€€€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôøÕÁ±½…‘I•˜¹ÕÉÉ•¹Ğü¹±¥¬ ¥ô‘¥Í…‰±•õíÕÁ±½…‘¥¹ôùíÕÁ±½…‘¥¹œ€ü€‰MÕ‰¥•¹‘¿Š˜ˆ€è€ˆ¬É•…È‰ôğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€€€€€ñ¥¹ÁÕĞÉ•˜õíÕÁ±½…‘I•™ô¡¥‘‘•¸ÑåÁ”ô‰™¥±”ˆµÕ±Ñ¥Á±”…•ÁĞô‰…ÁÁ±¥…Ñ¥½¸½Á‘˜±¥µ…”½Á¹œ±¥µ…”½©Á•œ±¥µ…”½İ•‰À±¥µ…”½¥˜ˆ½¹¡…¹”õíÕÁ±½…‘¥±•Íô€¼ø(€€€€€€€€€€€€€€€íÍ•±•Ñ•¹‘…Ñ„¹…ÑÑ…¡µ•¹ÑÌ¹±•¹Ñ €ü€ (€€€€€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰…ÑÑ…¡µ•¹Ğµ±¥ÍĞˆø(€€€€€€€€€€€€€€€€€€€íÍ•±•Ñ•¹‘…Ñ„¹…ÑÑ…¡µ•¹ÑÌ¹µ…À ¡…ÑÑ…¡µ•¹Ğ¤€ôø€ (€€€€€€€€€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰…ÑÑ…¡µ•¹Ğˆ­•äõí…ÑÑ…¡µ•¹Ğ¹¥‘ôø(€€€€€€€€€€€€€€€€€€€€€€€í…ÑÑ…¡µ•¹Ğ¹ÑåÁ”¹ÍÑ…ÉÑÍ]¥Ñ  ‰¥µ…”¼ˆ¤€ü€ñ%µ…”ÍÉŒõí…ÑÑ…¡µ•¹Ğ¹ÕÉ±ô…±Ğôˆˆİ¥‘Ñ õìÌáô¡•¥¡ĞõìÌáôÕ¹½ÁÑ¥µ¥é•€¼ø€è€ñÍÁ…¸±…ÍÍ9…µ”ô‰Á‘˜µ¥½¸ˆùAğ½ÍÁ…¸ùô(€€€€€€€€€€€€€€€€€€€€€€€€ñ„¡É•˜õí…ÑÑ…¡µ•¹Ğ¹ÕÉ±ôÑ…É•Ğô‰}‰±…¹¬ˆÉ•°ô‰¹½É•™•ÉÉ•ÈˆøñÍÑÉ½¹œùí…ÑÑ…¡µ•¹Ğ¹¹…µ•ôğ½ÍÑÉ½¹œøñÍµ…±°ùí…ÑÑ…¡µ•¹Ğ¹Í¥é”€ü€‘í5…Ñ ¹µ…à Ä°5…Ñ ¹É½Õ¹¡…ÑÑ…¡µ•¹Ğ¹Í¥é”€¼€ÄÀÈĞ¤¥ô-	€€è€‰5…¡½Ñ”ÁÉ•…É…‘¼‰ôğ½Íµ…±°øğ½„ø(€€€€€€€€€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸…É¥„µ±…‰•°õíEÕ¥Ñ…È€‘í…ÑÑ…¡µ•¹Ğ¹¹…µ•õô½¹±¥¬õì ¤€ôøÉ•µ½Ù•ÑÑ…¡µ•¹Ğ¡…ÑÑ…¡µ•¹Ğ¥ôû\ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€€€€€€€€€¤¥ô(€€€€€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€€€€€¤€è€ñÀ±…ÍÍ9…µ”ô‰•µÁÑäµ™¥±•ÌˆùÉ•„ÁÉ½•‘¥µ¥•¹Ñ½Ì°™½Éµ…Ñ½Ì°•Ù¥‘•¹¥…Ì¼¥·…•¹•Ì¸1…Ì™½Ñ½Ì‘”Á•ÉÍ½¹…ÌÑ…µ‰§¥¸…Á…É••¸•¸ÍÔÑ…É©•Ñ„¸ğ½Àùô(€€€€€€€€€€€€€€ğ½Í•Ñ¥½¸ø((€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰½¹¹•Ñ¥½¸µÍÑÉ¥Àˆø(€€€€€€€€€€€€€€€€ñ‘¥Øøñˆùí•‘•Ì¹™¥±Ñ•È ¡•‘”¤€ôø•‘”¹Í½ÕÉ”€ôôôÍ•±•Ñ•¹¥¤¹±•¹Ñ¡ôğ½ˆøñÍÁ…¸ùM…±¥•¹Ñ•Ìğ½ÍÁ…¸øğ½‘¥Øø(€€€€€€€€€€€€€€€€ñ‘¥Øøñˆùí•‘•Ì¹™¥±Ñ•È ¡•‘”¤€ôø•‘”¹Ñ…É•Ğ€ôôôÍ•±•Ñ•¹¥¤¹±•¹Ñ¡ôğ½ˆøñÍÁ…¸ù¹ÑÉ…¹Ñ•Ìğ½ÍÁ…¸øğ½‘¥Øø(€€€€€€€€€€€€€€€€ñ‘¥ØøñˆùíÍ•±•Ñ•¹‘…Ñ„¹…ÑÑ…¡µ•¹ÑÌ¹±•¹Ñ¡ôğ½ˆøñÍÁ…¸ùÉ¡¥Ù½Ìğ½ÍÁ…¸øğ½‘¥Øø(€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰‘•±•Ñ”µ¹½‘”ˆ½¹±¥¬õí‘•±•Ñ•M•±•Ñ•‘ô‘¥Í…‰±•õí¹½‘•Ì¹±•¹Ñ €ôôô€Åôù±¥µ¥¹…È¹½‘¼ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ğ½…Í¥‘”ø(€€€€€€€€€€¥ô(€€€€€€€€ğ½‘¥Øø(€€€€€€ğ½Í•Ñ¥½¸ø((€€€€€íÉ•…Ñ¥½¹=Á•¸€˜˜€ (€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ½‘…°µ‰…­‘É½ÀˆÉ½±”ô‰ÁÉ•Í•¹Ñ…Ñ¥½¸ˆ½¹5½ÕÍ•½İ¸õì¡•Ù•¹Ğ¤€ôøì¥˜€¡•Ù•¹Ğ¹Ñ…É•Ğ€ôôô•Ù•¹Ğ¹ÕÉÉ•¹ÑQ…É•Ğ¤Í•ÑÉ•…Ñ¥½¹=Á•¸¡™…±Í”¤ìõôø(€€€€€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É•…Ñ¥½¸µµ½‘…°ˆÉ½±”ô‰‘¥…±½œˆ…É¥„µµ½‘…°ô‰ÑÉÕ”ˆ…É¥„µ±…‰•±±•‘‰äô‰É•…Ñ¥½¸µÑ¥Ñ±”ˆø(€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰µ½‘…°µ±½Í”ˆ½¹±¥¬õì ¤€ôøÍ•ÑÉ•…Ñ¥½¹=Á•¸¡™…±Í”¥ô…É¥„µ±…‰•°ô‰•ÉÉ…Èˆøñ%½¸¹…µ”ô‰±½Í”ˆ€¼øğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ñÍµ…±°ù=9MQIU%H05Ağ½Íµ…±°ø(€€€€€€€€€€€€ñ È¥ô‰É•…Ñ¥½¸µÑ¥Ñ±”ˆû
+ıE×¤ÅÕ¥•É•Ì…É•…Èüğ½ Èø(€€€€€€€€€€€€ñÀùí½¹¹•Ñ9•İ9½‘”€ü€ğùM”½¹•Ñ…Ë„½¸€ñÍÑÉ½¹œùíÍ•±•Ñ•ü¹‘…Ñ„¹¹…µ”€üü€‰•°¹½‘¼Í•±•¥½¹…‘¼‰ôğ½ÍÑÉ½¹œø¸ğ¼ø€è€ğùM”É•…Ë„½µ¼Õ¹„É…µ„¥¹‘•Á•¹‘¥•¹Ñ”°Í¥¸½¹•á§Í¸¥¹¥¥…°¸ğ¼ùôAÕ•‘•Ìµ½Ù•É±¼°•‘¥Ñ…É±¼ä½¹•Ñ…É±¼‘•ÍÁ×¥Ì¸ğ½Àø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰½¹¹•Ñ¥½¸µ¡½¥”ˆÉ½±”ô‰É½ÕÀˆ…É¥„µ±…‰•°ô‰½¹•á§Í¸‘•°¹Õ•Ù¼•±•µ•¹Ñ¼ˆø(€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”õí½¹¹•Ñ9•İ9½‘”€ü€‰…Ñ¥Ù”ˆ€è€ˆ‰ô½¹±¥¬õì ¤€ôøÍ•Ñ½¹¹•Ñ9•İ9½‘”¡ÑÉÕ”¥ôù½¹•Ñ…È½¸•°Í•±•¥½¹…‘¼ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”õì…½¹¹•Ñ9•İ9½‘”€ü€‰…Ñ¥Ù”ˆ€è€ˆ‰ô½¹±¥¬õì ¤€ôøÍ•Ñ½¹¹•Ñ9•İ9½‘”¡™…±Í”¥ôùÉ•…È¥¹‘•Á•¹‘¥•¹Ñ”ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰É•…Ñ¥½¸µÉ¥ˆø(€€€€€€€€€€€€€íÉ•…Ñ¥½¹=É‘•È¹µ…À ¡¡½¥”¤€ôøì(€€€€€€€€€€€€€€€½¹ÍĞµ•Ñ„€ôÉ•…Ñ¥½¹5•Ñ…m¡½¥•tì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€ñ‰ÕÑÑ½¸­•äõí¡½¥•ô½¹±¥¬õì ¤€ôø¡½½Í•É•…Ñ¥½¸¡¡½¥”¥ôøñÍÁ…¸ÍÑå±”õíì½±½Èèµ•Ñ„¹½±½È°‰…­É½Õ¹è€‘íµ•Ñ„¹½±½ÉôÄÑ€õôùíµ•Ñ„¹Í¡½ÉÑôğ½ÍÁ…¸øñ‘¥ØøñÍÑÉ½¹œùíµ•Ñ„¹±…‰•±ôğ½ÍÑÉ½¹œøñÍµ…±°ùíµ•Ñ„¹‘•ÍÉ¥ÁÑ¥½¹ôğ½Íµ…±°øğ½‘¥Øøñ%½¸¹…µ”ô‰…ÉÉ½Üˆ€¼øğ½‰ÕÑÑ½¸øì(€€€€€€€€€€€€€ô¥ô(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰‰±…¹¬µÉ•Í•Ğˆ½¹±¥¬õíÉ•Í•Ñ	±…¹­ôùµÁ•é…ÈÕ¸µ…Á„¹Õ•Ù¼•¸‰±…¹¼ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€ğ½Í•Ñ¥½¸ø(€€€€€€€€ğ½‘¥Øø(€€€€€€¥ô((€€€€€í‰…­ÕÁ=Á•¸€˜˜€ (€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ½‘…°µ‰…­‘É½ÀˆÉ½±”ô‰ÁÉ•Í•¹Ñ…Ñ¥½¸ˆ½¹5½ÕÍ•½İ¸õì¡•Ù•¹Ğ¤€ôøì¥˜€¡•Ù•¹Ğ¹Ñ…É•Ğ€ôôô•Ù•¹Ğ¹ÕÉÉ•¹ÑQ…É•Ğ¤Í•Ñ	…­ÕÁ=Á•¸¡™…±Í”¤ìõôø(€€€€€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰‰…­ÕÀµµ½‘…°ˆÉ½±”ô‰‘¥…±½œˆ…É¥„µµ½‘…°ô‰ÑÉÕ”ˆ…É¥„µ±…‰•±±•‘‰äô‰‰…­ÕÀµÑ¥Ñ±”ˆø(€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰µ½‘…°µ±½Í”ˆ½¹±¥¬õì ¤€ôøÍ•Ñ	…­ÕÁ=Á•¸¡™…±Í”¥ô…É¥„µ±…‰•°ô‰•ÉÉ…È½Á¥…Ìˆøñ%½¸¹…µ”ô‰±½Í”ˆ€¼øğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ñÍµ…±°ù=A%L8MQ%MA=M%Q%Y<ğ½Íµ…±°ø(€€€€€€€€€€€€ñ È¥ô‰‰…­ÕÀµÑ¥Ñ±”ˆùI•ÍÁ…±‘¼‘¥…É¥¼±½…°ğ½ Èø(€€€€€€€€€€€€ñÀùM”½¹Í•ÉÙ„Õ¹„½Á¥„Á½È“µ„‘ÕÉ…¹Ñ”Õ¸·…á¥µ¼‘”ÑÉ•Ì“µ…Ì¸9¼½¹ÍÕµ”…±µ…•¹…µ¥•¹Ñ¼…‘¥¥½¹…°•¸I…¥±İ…ä¸ğ½Àø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰‰…­ÕÀµ±¥ÍĞˆø(€€€€€€€€€€€€€í‰…­ÕÁÌ¹±•¹Ñ €ü‰…­ÕÁÌ¹µ…À ¡‰…­ÕÀ¤€ôø€ (€€€€€€€€€€€€€€€€ñ…ÉÑ¥±”­•äõí‰…­ÕÀ¹¥‘ôø(€€€€€€€€€€€€€€€€€€ñÍÁ…¸øñ%½¸¹…µ”ô‰‰…­ÕÀˆ€¼øğ½ÍÁ…¸ø(€€€€€€€€€€€€€€€€€€ñ‘¥ØøñÍÑÉ½¹œùí¹•Ü…Ñ”¡‰…­ÕÀ¹É•…Ñ•‘Ğ¤¹Ñ½1½…±•…Ñ•MÑÉ¥¹œ ‰•Ìµ5`ˆ°ì‘…Ñ•MÑå±”è€‰±½¹œˆô¥ôğ½ÍÑÉ½¹œøñÍµ…±°ùí‰…­ÕÀ¹‘½Õµ•¹Ğ¹¹½‘•Ì¹±•¹Ñ¡ô¹½‘½Ìƒ
+Üí‰…­ÕÀ¹‘½Õµ•¹Ğ¹•‘•Ì¹±•¹Ñ¡ô½¹•á¥½¹•Ìğ½Íµ…±°øğ½‘¥Øø(€€€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸½¹±¥¬õì ¤€ôø‘½İ¹±½…‘	…­ÕÀ¡‰…­ÕÀ¥ôù•Í…É…Èğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰É•ÍÑ½É”µ‰ÕÑÑ½¸ˆ½¹±¥¬õì ¤€ôøÉ•ÍÑ½É•	…­ÕÀ¡‰…­ÕÀ¥ôùI•ÍÑ…ÕÉ…Èğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€ğ½…ÉÑ¥±”ø(€€€€€€€€€€€€€€¤¤€è€ñ‘¥Ø±…ÍÍ9…µ”ô‰‰…­ÕÀµ•µÁÑäˆù1„ÁÉ¥µ•É„½Á¥„…Á…É••Ë„…ÕÑ½·…Ñ¥…µ•¹Ñ”…°…‰É¥È¼Õ…É‘…È•°µ…Á„¡½ä¸ğ½‘¥Øùô(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€ğ½Í•Ñ¥½¸ø(€€€€€€€€ğ½‘¥Øø(€€€€€€¥ô((€€€€€íÑÕÑ½É¥…±=Á•¸€˜˜€ (€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ½‘…°µ‰…­‘É½ÀÑÕÑ½É¥…°µ‰…­‘É½Àˆø(€€€€€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µµ½‘…°ˆÉ½±”ô‰‘¥…±½œˆ…É¥„µµ½‘…°ô‰ÑÉÕ”ˆ…É¥„µ±…‰•±±•‘‰äô‰ÑÕÑ½É¥…°µÑ¥Ñ±”ˆø(€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰µ½‘…°µ±½Í”ˆ½¹±¥¬õí±½Í•QÕÑ½É¥…±ô…É¥„µ±…‰•°ô‰•ÉÉ…ÈÑÕÑ½É¥…°ˆøñ%½¸¹…µ”ô‰±½Í”ˆ€¼øğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µÙ¥ÍÕ…°ˆøñÍÁ…¸øñ%½¸¹…µ”õíÑÕÑ½É¥…±MÑ•À€ôôô€À€ü€‰µ…Àˆ€èÑÕÑ½É¥…±MÑ•À€ôôôÑÕÑ½É¥…±MÑ•ÁÌ¹±•¹Ñ €´€Ä€ü€‰‰…­ÕÀˆ€èÑÕÑ½É¥…±MÑ•À€ôôô€Ì€ü€‰Á‘˜ˆ€è€‰½Éœ‰ô€¼øğ½ÍÁ…¸øñ‘¥Ø±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µ±¥¹•Ìˆøñ¤€¼øñ¤€¼øñ¤€¼øğ½‘¥Øøğ½‘¥Øø(€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µ½Áäˆø(€€€€€€€€€€€€€€ñÍµ…±°ùíÑÕÑ½É¥…±MÑ•ÁÍmÑÕÑ½É¥…±MÑ•Át¹•å•‰É½İôğ½Íµ…±°ø(€€€€€€€€€€€€€€ñ È¥ô‰ÑÕÑ½É¥…°µÑ¥Ñ±”ˆùíÑÕÑ½É¥…±MÑ•ÁÍmÑÕÑ½É¥…±MÑ•Át¹Ñ¥Ñ±•ôğ½ Èø(€€€€€€€€€€€€€€ñÀùíÑÕÑ½É¥…±MÑ•ÁÍmÑÕÑ½É¥…±MÑ•Át¹‰½‘åôğ½Àø(€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µ‘½ÑÌˆùíÑÕÑ½É¥…±MÑ•ÁÌ¹µ…À ¡|°¥¹‘•à¤€ôø€ñ¤­•äõí¥¹‘•áô±…ÍÍ9…µ”õí¥¹‘•à€ôôôÑÕÑ½É¥…±MÑ•À€ü€‰…Ñ¥Ù”ˆ€è€ˆ‰ô€¼ø¥ôğ½‘¥Øø(€€€€€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÑÕÑ½É¥…°µ…Ñ¥½¹Ìˆø(€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰¡½ÍĞµ‰ÕÑÑ½¸ˆ½¹±¥¬õí±½Í•QÕÑ½É¥…±ôùM…±Ñ…ÈÑ½‘¼ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€€€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰¹…Ùäµ‰ÕÑÑ½¸ˆ½¹±¥¬õì ¤€ôøÑÕÑ½É¥…±MÑ•À€ôôôÑÕÑ½É¥…±MÑ•ÁÌ¹±•¹Ñ €´€Ä€ü±½Í•QÕÑ½É¥…° ¤€èÍ•ÑQÕÑ½É¥…±MÑ•À ¡ÕÉÉ•¹Ğ¤€ôøÕÉÉ•¹Ğ€¬€Ä¥ôùíÑÕÑ½É¥…±MÑ•À€ôôôÑÕÑ½É¥…±MÑ•ÁÌ¹±•¹Ñ €´€Ä€ü€‰µÁ•é…Èˆ€è€‰M¥Õ¥•¹Ñ”‰ôğ½‰ÕÑÑ½¸ø(€€€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€ğ½Í•Ñ¥½¸ø(€€€€€€€€ğ½‘¥Øø(€€€€€€¥ô(€€€€ğ½µ…¥¸ø(€€¤ì)ô()•áÁ½ÉĞ‘•™…Õ±Ğ™Õ¹Ñ¥½¸AÉ½•ÍÍ5…À ¤ì(€É•ÑÕÉ¸€ñI•…Ñ±½İAÉ½Ù¥‘•Èøñ5…ÁáÁ•É¥•¹”€¼øğ½I•…Ñ±½İAÉ½Ù¥‘•Èøì)ô(

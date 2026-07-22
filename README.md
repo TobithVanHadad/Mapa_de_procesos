@@ -6,6 +6,8 @@ Aplicación empresarial para documentar, relacionar y visualizar procesos, activ
 
 El mapa inicia como un machote vacío y sirve para cualquier área. Incluye edición directa, ficha general, archivos PDF e imágenes, tutorial de primer acceso, creación guiada de nodos, conexiones inteligentes, vista de organigrama y guardado automático compartido.
 
+Las tarjetas muestran nombres largos completos y pueden crearse como ramas independientes para conectarlas después. La interfaz incluye selección reforzada, ficha plegable, ajuste automático del lienzo, sonidos opcionales y copias locales diarias conservadas únicamente durante tres días en cada dispositivo.
+
 El PDF rellenable incluido en `output/pdf` está diseñado como base de documentación de procesos y toma como referencia ISO 9001:2015 + Amd 1:2024, ISO 10013:2021, ISO 31000:2018 e ISO 19011:2026, con módulos de aplicabilidad para seguridad, ambiente, información y requisitos sectoriales.
 
 ## Requisitos
@@ -56,6 +58,12 @@ Las sesiones abiertas consultan el documento compartido cada tres segundos y al
 recuperar el foco de la ventana. El indicador `Datos sincronizados` confirma que el
 cambio llegó al almacenamiento del servidor; `Guardado local` indica que todavía
 no ha podido compartirse y la aplicación reintentará automáticamente.
+
+Además del guardado compartido, cada navegador conserva en IndexedDB una copia del
+mapa por día durante un máximo de tres días. Estas copias son propias del dispositivo,
+pueden descargarse o restaurarse desde la aplicación y no sustituyen el volumen
+persistente de Railway. Los archivos adjuntos permanecen en el almacenamiento del
+servidor; la copia local conserva sus referencias dentro del mapa.
 
 La migración PostgreSQL se mantiene para la siguiente fase de identidad, permisos,
 auditoría y consultas estructuradas. Mientras no se implemente autenticación, cualquier

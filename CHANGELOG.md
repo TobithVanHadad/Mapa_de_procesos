@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0] - 2026-07-22
+
+### Added
+
+- Sonidos sintetizados para crear, conectar, seleccionar, restaurar y escribir, con controles de volumen y silencio guardados por dispositivo.
+- Creación de ramas y elementos independientes que pueden conectarse posteriormente.
+- Copia automática diaria del mapa en el dispositivo, con descarga, restauración y eliminación automática después de tres días.
+- Controles para ajustar el mapa completo y mostrar u ocultar la ficha editable.
+
+### Changed
+
+- Las tarjetas crecen para mostrar nombres largos completos sin cortar el texto.
+- El nodo seleccionado ahora tiene borde, halo y etiqueta de selección más visibles.
+- El botón para agregar elementos tiene mayor contraste y permanece accesible sobre el mapa.
+- La distribución se adapta a pantallas pequeñas y permite plegar la ficha para aprovechar el lienzo.
+
 ## [0.3.1] - 2026-07-22
 
 ### Fixed
