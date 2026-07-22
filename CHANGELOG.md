@@ -10,6 +10,7 @@
 - Vista de organigrama y navegación lateral reducida a mapa y organigrama.
 - Conexiones automáticas delgadas para personas, sistemas y documentos.
 - PDF rellenable de nueve páginas con matriz de aplicabilidad y referencias normativas oficiales.
+- Despliegue continuo de esta versión desde la rama `main` hacia Railway.
 
 ### Changed
 
@@ -37,3 +38,4 @@
 - Base Docker para aplicación y PostgreSQL local.
 - Documentación de instalación y despliegue seguro.
 - Build standalone de Next.js, endpoint de salud y configuración de Railway.
+
