@@ -52,6 +52,11 @@ cambios entre reinicios y despliegues, agregar un volumen de Railway montado en
 `/data` y configurar `DATA_DIR=/data` en el servicio web. Sin volumen, Railway usa
 almacenamiento temporal y la información puede perderse durante un redeploy.
 
+Las sesiones abiertas consultan el documento compartido cada tres segundos y al
+recuperar el foco de la ventana. El indicador `Datos sincronizados` confirma que el
+cambio llegó al almacenamiento del servidor; `Guardado local` indica que todavía
+no ha podido compartirse y la aplicación reintentará automáticamente.
+
 La migración PostgreSQL se mantiene para la siguiente fase de identidad, permisos,
 auditoría y consultas estructuradas. Mientras no se implemente autenticación, cualquier
 persona con el enlace puede consultar y editar el mapa compartido.

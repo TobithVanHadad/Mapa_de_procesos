@@ -257,6 +257,20 @@ function isLegacyDemo(document: MapDocument | null): boolean {
   return Boolean(document && document.version < 3 && document.processName === "Desarrollo y aprobación de etiquetas");
 }
 
+function normalizeDocument(document: MapDocument): MapDocument {
+  return {
+    version: 3,
+    processName: document.processName || defaultDocument.processName,
+    department: document.department || defaultDocument.department,
+    nodes: document.nodes.map((node) => ({
+      ...node,
+      type: "editable",
+      data: nodeData(node.data),
+    })),
+    edges: document.edges ?? [],
+  };
+}
+
 function edgeStyleFor(source: MapNode | undefined, target: MapNode | undefined) {
   const thinKinds = new Set<NodeKind>(["person", "system", "manual"]);
   if ((source && thinKinds.has(source.data.kind)) || (target && thinKinds.has(target.data.kind))) return supportEdge;
@@ -281,7 +295,11 @@ function MapExperience() {
   const [connectionSource, setConnectionSource] = useState<string | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
+  const [saveRetry, setSaveRetry] = useState(0);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const serverDocumentRef = useRef("");
+  const currentDocumentRef = useRef("");
+  const dirtyRef = useRef(false);
   const { fitView } = useReactFlow<MapNode, Edge>();
 
   useEffect(() => {
@@ -295,25 +313,29 @@ function MapExperience() {
         const stored = payload.document ?? readLocalDocument();
         const document = isLegacyDemo(stored) ? cloneDefaultDocument() : stored;
         if (!cancelled && document?.nodes?.length) {
-          setNodes(document.nodes.map((node) => ({
-            ...node,
-            type: "editable",
-            data: nodeData(node.data),
-          })));
-          setEdges(document.edges ?? []);
-          setProcessName(document.processName || defaultDocument.processName);
-          setDepartment(document.department || defaultDocument.department);
-          setSelectedId(document.nodes[0].id);
+          const normalized = normalizeDocument(document);
+          const signature = JSON.stringify(normalized);
+          serverDocumentRef.current = payload.document ? signature : "";
+          currentDocumentRef.current = signature;
+          dirtyRef.current = !payload.document;
+          setNodes(normalized.nodes);
+          setEdges(normalized.edges);
+          setProcessName(normalized.processName);
+          setDepartment(normalized.department);
+          setSelectedId(normalized.nodes[0].id);
         }
         if (!cancelled) setSaveState(payload.document && !isLegacyDemo(payload.document) ? "Datos sincronizados" : "Plantilla lista");
       } catch {
         const local = readLocalDocument();
         if (!cancelled && local?.nodes?.length) {
-          setNodes(local.nodes.map((node) => ({ ...node, type: "editable", data: nodeData(node.data) })));
-          setEdges(local.edges ?? []);
-          setProcessName(local.processName || defaultDocument.processName);
-          setDepartment(local.department || defaultDocument.department);
-          setSelectedId(local.nodes[0].id);
+          const normalized = normalizeDocument(local);
+          currentDocumentRef.current = JSON.stringify(normalized);
+          dirtyRef.current = true;
+          setNodes(normalized.nodes);
+          setEdges(normalized.edges);
+          setProcessName(normalized.processName);
+          setDepartment(normalized.department);
+          setSelectedId(normalized.nodes[0].id);
         }
         if (!cancelled) setSaveState("Guardado local");
       } finally {
@@ -330,15 +352,22 @@ function MapExperience() {
 
   useEffect(() => {
     if (!loaded) return;
-    const timer = window.setTimeout(async () => {
-      const document: MapDocument = {
-        version: 3,
-        processName,
-        department,
-        nodes: nodes.map((node) => ({ id: node.id, type: "editable", position: node.position, data: node.data })),
-        edges,
-      };
+    const document: MapDocument = {
+      version: 3,
+      processName,
+      department,
+      nodes: nodes.map((node) => ({ id: node.id, type: "editable", position: node.position, data: node.data })),
+      edges,
+    };
+    const serialized = JSON.stringify(document);
+    currentDocumentRef.current = serialized;
+    if (serialized === serverDocumentRef.current) {
+      dirtyRef.current = false;
+      return;
+    }
 
+    dirtyRef.current = true;
+    const timer = window.setTimeout(async () => {
       window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(document));
       setSaveState("Guardando…");
       try {
@@ -348,13 +377,57 @@ function MapExperience() {
           body: JSON.stringify(document),
         });
         if (!response.ok) throw new Error("No se pudo guardar");
+        serverDocumentRef.current = serialized;
+        dirtyRef.current = currentDocumentRef.current !== serialized;
         setSaveState("Datos sincronizados");
       } catch {
         setSaveState("Guardado local");
+        window.setTimeout(() => setSaveRetry((current) => current + 1), 4000);
       }
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [department, edges, loaded, nodes, processName]);
+  }, [department, edges, loaded, nodes, processName, saveRetry]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    let cancelled = false;
+
+    const pullSharedChanges = async () => {
+      if (dirtyRef.current) return;
+      try {
+        const response = await fetch("/api/map", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json() as { document: MapDocument | null };
+        if (cancelled || !payload.document?.nodes?.length || dirtyRef.current) return;
+
+        const normalized = normalizeDocument(payload.document);
+        const signature = JSON.stringify(normalized);
+        if (signature === serverDocumentRef.current) return;
+
+        serverDocumentRef.current = signature;
+        currentDocumentRef.current = signature;
+        dirtyRef.current = false;
+        setNodes(normalized.nodes);
+        setEdges(normalized.edges);
+        setProcessName(normalized.processName);
+        setDepartment(normalized.department);
+        setSelectedId((current) => normalized.nodes.some((node) => node.id === current) ? current : normalized.nodes[0].id);
+        window.localStorage.setItem(LOCAL_STORAGE_KEY, signature);
+        setSaveState("Datos sincronizados");
+      } catch {
+        // El respaldo local permanece disponible mientras regresa la conexión.
+      }
+    };
+
+    const interval = window.setInterval(() => void pullSharedChanges(), 3000);
+    const onFocus = () => void pullSharedChanges();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [loaded, setEdges, setNodes]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void fitView({ padding: 0.25, minZoom: 0.42, maxZoom: 1 }), 80);

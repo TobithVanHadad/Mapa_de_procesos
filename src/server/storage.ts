@@ -20,6 +20,13 @@ async function prepareStorage() {
   await fs.mkdir(uploadsDirectory, { recursive: true });
 }
 
+export async function verifyStorage() {
+  await prepareStorage();
+  const probe = path.join(root, `.write-check-${randomUUID()}`);
+  await fs.writeFile(probe, "ok", { flag: "wx" });
+  await fs.unlink(probe);
+}
+
 export async function readMapDocument(): Promise<unknown | null> {
   await prepareStorage();
   try {

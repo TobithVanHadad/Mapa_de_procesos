@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1] - 2026-07-22
+
+### Fixed
+
+- Escritura compartida en el volumen `/data` de Railway con ajuste seguro de permisos al iniciar el contenedor.
+- Sincronización automática cada tres segundos para reflejar en otros dispositivos los cambios ya guardados.
+- Verificación de persistencia dentro del endpoint de salud para impedir despliegues que sólo puedan guardar localmente.
+
 ## [0.3.0] - 2026-07-22
 
 ### Added
@@ -38,4 +46,3 @@
 - Base Docker para aplicación y PostgreSQL local.
 - Documentación de instalación y despliegue seguro.
 - Build standalone de Next.js, endpoint de salud y configuración de Railway.
-
