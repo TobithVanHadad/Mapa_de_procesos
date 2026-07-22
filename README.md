@@ -1,10 +1,12 @@
 # Enterprise Process & Knowledge Map
 
-Base de una plataforma empresarial para documentar, relacionar y visualizar procesos, actividades, personas, sistemas, riesgos y documentos. La estructura está alineada con buenas prácticas de gestión por procesos y control documental; no implica certificación de ninguna organización.
+Aplicación empresarial para documentar, relacionar y visualizar procesos, actividades, personas, sistemas, controles y documentos. La estructura está alineada con buenas prácticas de gestión por procesos y control documental; no implica certificación de ninguna organización.
 
 ## Estado
 
-Fase 1 completada: arquitectura, modelo PostgreSQL inicial, interfaz reconocible del mapa, contratos de dominio, Docker y pruebas básicas. El mapa mostrado usa datos ficticios. Autenticación, persistencia conectada, edición y carga de archivos se implementarán en fases posteriores y no deben considerarse productivos todavía.
+El mapa inicia como un machote vacío y sirve para cualquier área. Incluye edición directa, ficha general, archivos PDF e imágenes, tutorial de primer acceso, creación guiada de nodos, conexiones inteligentes, vista de organigrama y guardado automático compartido.
+
+El PDF rellenable incluido en `output/pdf` está diseñado como base de documentación de procesos y toma como referencia ISO 9001:2015 + Amd 1:2024, ISO 10013:2021, ISO 31000:2018 e ISO 19011:2026, con módulos de aplicabilidad para seguridad, ambiente, información y requisitos sectoriales.
 
 ## Requisitos
 
@@ -51,7 +53,8 @@ cambios entre reinicios y despliegues, agregar un volumen de Railway montado en
 almacenamiento temporal y la información puede perderse durante un redeploy.
 
 La migración PostgreSQL se mantiene para la siguiente fase de identidad, permisos,
-auditoría y consultas estructuradas.
+auditoría y consultas estructuradas. Mientras no se implemente autenticación, cualquier
+persona con el enlace puede consultar y editar el mapa compartido.
 
 ## Verificación
 
@@ -66,6 +69,7 @@ npm run build
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
 - [Despliegue](docs/DEPLOYMENT.md)
 - [Contribución](CONTRIBUTING.md)
+- [Machote PDF rellenable](output/pdf/machote-documentacion-procesos-orvel.pdf)
 - [Cambios](CHANGELOG.md)
 
 ## Seguridad

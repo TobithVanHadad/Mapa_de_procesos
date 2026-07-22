@@ -1,11 +1,27 @@
 # Changelog
 
+## [0.3.0] - 2026-07-22
+
+### Added
+
+- Machote vacío y universal para documentar procesos de cualquier área.
+- Tutorial guiado de primer acceso con avance paso a paso y opción para saltarlo.
+- Asistente para crear rama principal, subproceso, conexión, persona, sistema, documento, control o salida.
+- Vista de organigrama y navegación lateral reducida a mapa y organigrama.
+- Conexiones automáticas delgadas para personas, sistemas y documentos.
+- PDF rellenable de nueve páginas con matriz de aplicabilidad y referencias normativas oficiales.
+
+### Changed
+
+- El mapa deja de tratar los nodos como un flujo en vivo: se retiraron estado y criticidad.
+- La ficha general ahora documenta objetivo, entradas, salidas, instrucciones, responsables y archivos.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
 
 - Identidad visual azul y verde de Distribuciones Orvel.
-- Edición directa de nombre, código y estado desde cada nodo.
+- Edición directa de nombre y código desde cada nodo.
 - Ficha general completamente editable para procesos, personas y sistemas.
 - Carga compartida de documentos PDF e imágenes con validación de contenido.
 - Guardado automático del mapa mediante API y soporte de volumen persistente en Railway.

@@ -45,6 +45,9 @@ yarn-error.log*
 /work/
 /uploads/
 /data/
+/tmp/
+/output/pdf/machote-registro-proceso-exportacion-orvel.pdf
+/public/plantillas/machote-registro-proceso-exportacion-orvel.pdf
 
 # vercel
 .vercel
