@@ -10,6 +10,8 @@ Las tarjetas muestran nombres largos completos y pueden crearse como ramas indep
 
 Las conexiones pueden cortarse sin eliminar fichas y se admiten varias relaciones entre los mismos elementos. Cada tipo de nodo muestra sólo los campos aplicables; las personas y departamentos ya registrados aparecen como sugerencias reutilizables. Al repetir una persona o puesto como participante, el mapa genera su conexión de apoyo automáticamente. El organigrama usa el campo `Reporta a`, acomoda la jerarquía y distingue cada familia departamental por color.
 
+Los elementos que comparten departamento reciben ligaduras automáticas. Las personas pueden reportar a varios jefes y el organigrama conserva niveles horizontales claros, incluido Administrativo. También se incluyen conexión por clic entre tarjetas, conectores ampliados, acomodo asistido reversible, reporte integral imprimible y un tutorial guiado directamente sobre los controles reales de la web.
+
 El PDF rellenable incluido en `output/pdf` está diseñado como base de documentación de procesos y toma como referencia ISO 9001:2015 + Amd 1:2024, ISO 10013:2021, ISO 31000:2018 e ISO 19011:2026, con módulos de aplicabilidad para seguridad, ambiente, información y requisitos sectoriales.
 
 ## Requisitos

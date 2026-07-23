@@ -295,6 +295,9 @@ button { color: inherit; }
 }
 .department-legend i { width: 8px; height: 8px; border-radius: 50%; }
 .department-legend b { min-width: 17px; height: 17px; display: grid; place-items: center; border-radius: 9px; background: #edf3f8; color: var(--navy); font-size: 7px; }
+.hierarchy-level-guide { position: absolute; z-index: 12; left: 20px; bottom: 104px; display: grid; gap: 4px; padding: 9px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, .94); box-shadow: 0 7px 20px rgba(21, 59, 94, .1); pointer-events: none; }
+.hierarchy-level-guide span { display: flex; align-items: center; gap: 7px; color: #5d7289; font-size: 7px; font-weight: 800; }
+.hierarchy-level-guide b { width: 17px; height: 17px; display: grid; place-items: center; border-radius: 50%; background: #f1edff; color: #7047d9; font-size: 7px; }
 
 .react-flow { background: transparent; }
 .react-flow__node { width: 270px; border: 0; background: transparent; text-align: left; }
@@ -330,7 +333,11 @@ button { color: inherit; }
 .node-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 11px 9px; border-top: 1px solid #edf1f5; }
 .node-type-label { max-width: 145px; padding: 3px 7px; border-radius: 9px; font-size: 8px; font-weight: 850; }
 .node-footer span { color: #72879a; font-size: 8px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
-.react-flow__handle { width: 10px; height: 10px; border: 2px solid white; background: var(--navy); box-shadow: 0 0 0 1px var(--navy); }
+.react-flow__handle { width: 15px; height: 15px; border: 3px solid white; background: var(--navy); box-shadow: 0 0 0 2px var(--navy), 0 3px 9px rgba(16, 63, 110, .25); transition: width .15s ease, height .15s ease, box-shadow .15s ease; }
+.react-flow__handle:hover { width: 21px; height: 21px; background: var(--green); box-shadow: 0 0 0 5px rgba(11, 155, 69, .2), 0 0 0 2px var(--green); }
+.graph-panel.is-connecting .orvel-node { cursor: crosshair; box-shadow: 0 0 0 2px rgba(11, 155, 69, .13), 0 10px 25px rgba(29, 63, 96, .12); }
+.graph-panel.is-connecting .react-flow__handle { width: 19px; height: 19px; background: var(--green); box-shadow: 0 0 0 4px rgba(11, 155, 69, .2), 0 0 0 2px var(--green); animation: connector-pulse 1.25s ease-in-out infinite; }
+@keyframes connector-pulse { 50% { box-shadow: 0 0 0 8px rgba(11, 155, 69, .06), 0 0 0 2px var(--green); } }
 .react-flow__edge-path { filter: drop-shadow(0 1px 2px rgba(16, 63, 110, .1)); }
 .react-flow__edge { cursor: pointer; }
 .react-flow__edge.selected .react-flow__edge-path { stroke: var(--danger) !important; stroke-width: 4px !important; filter: drop-shadow(0 0 4px rgba(207, 48, 43, .35)); }
@@ -396,6 +403,10 @@ button { color: inherit; }
 .field input, .field select { height: 38px; padding: 0 10px; }
 .field textarea { min-height: 100px; padding: 10px; resize: vertical; line-height: 1.55; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(16, 63, 110, .09); background: white; }
+.manager-field > small { display: block; margin-top: 7px; color: var(--muted); font-size: 8px; }
+.manager-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.manager-chips button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid #cdbff5; border-radius: 15px; background: #f4f0ff; color: #6240bd; font-size: 8px; font-weight: 800; cursor: pointer; }
+.manager-chips button span { font-size: 13px; line-height: .8; }
 
 .reuse-section, .attachments-section, .connection-manager { padding: 16px 20px; border-top: 1px solid var(--line); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -520,7 +531,7 @@ button { color: inherit; }
   background: rgba(6, 28, 50, .58);
   backdrop-filter: blur(4px);
 }
-.creation-modal, .tutorial-modal {
+.creation-modal, .tutorial-modal, .layout-modal {
   position: relative;
   width: min(680px, 96vw);
   max-height: min(760px, 92vh);
@@ -531,6 +542,17 @@ button { color: inherit; }
   box-shadow: 0 28px 75px rgba(5, 29, 53, .3);
 }
 .creation-modal { padding: 28px; }
+.layout-modal { position: relative; width: min(720px, 96vw); padding: 29px; }
+.layout-modal > small { color: var(--green); font-size: 8px; font-weight: 950; letter-spacing: .11em; }
+.layout-modal h2 { margin: 7px 48px 7px 0; color: var(--ink); font-size: 24px; letter-spacing: -.035em; }
+.layout-modal > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.layout-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
+.layout-options > button { min-height: 180px; display: flex; flex-direction: column; align-items: flex-start; gap: 15px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: #f8fbfd; color: var(--ink); text-align: left; cursor: pointer; }
+.layout-options > button:hover { border-color: #99b0c4; background: white; transform: translateY(-2px); box-shadow: 0 10px 24px rgba(21, 59, 94, .1); }
+.layout-options > button > span { width: 43px; height: 43px; display: grid; place-items: center; border-radius: 11px; background: var(--green-soft); color: var(--green); }
+.layout-options strong, .layout-options small { display: block; }
+.layout-options strong { margin-bottom: 6px; font-size: 11px; }
+.layout-options small { color: var(--muted); font-size: 8px; line-height: 1.5; }
 .modal-close {
   position: absolute;
   z-index: 2;
@@ -606,6 +628,24 @@ button { color: inherit; }
 .tutorial-actions { display: flex; justify-content: space-between; gap: 10px; }
 .tutorial-actions button { min-width: 100px; }
 
+.guided-tour-layer { position: fixed; z-index: 200; inset: 0; pointer-events: none; }
+.tour-shade { position: fixed; z-index: 200; display: block; background: rgba(4, 23, 41, .64); backdrop-filter: blur(1px); pointer-events: none; }
+.tour-shade-top { top: 0; left: 0; right: 0; }
+.tour-shade-left { left: 0; }
+.tour-shade-right { right: 0; }
+.tour-shade-bottom { left: 0; right: 0; bottom: 0; }
+.tour-spotlight { position: fixed; z-index: 202; display: block; border: 3px solid #59d586; border-radius: 12px; box-shadow: 0 0 0 5px rgba(89, 213, 134, .2), 0 0 26px rgba(89, 213, 134, .55); pointer-events: none; animation: tour-pulse 1.4s ease-in-out infinite; }
+@keyframes tour-pulse { 50% { box-shadow: 0 0 0 9px rgba(89, 213, 134, .08), 0 0 34px rgba(89, 213, 134, .65); } }
+.tour-tooltip { position: fixed; z-index: 205; width: min(330px, calc(100vw - 24px)); padding: 19px; border: 1px solid rgba(255, 255, 255, .6); border-radius: 15px; background: white; color: var(--ink); box-shadow: 0 22px 58px rgba(2, 20, 37, .34); pointer-events: auto; }
+.tour-step { display: flex; align-items: center; gap: 8px; }
+.tour-step > span { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; background: var(--green); color: white; font-size: 9px; font-weight: 950; }
+.tour-step small { color: var(--green); font-size: 7px; font-weight: 950; letter-spacing: .08em; }
+.tour-tooltip h2 { margin: 11px 0 7px; font-size: 19px; letter-spacing: -.03em; }
+.tour-tooltip p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.tour-prompt { display: flex; align-items: center; gap: 7px; margin-top: 14px; padding: 9px; border-radius: 9px; background: var(--green-soft); color: #087b38; font-size: 8px; font-weight: 850; }
+.tour-prompt i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: connector-pulse 1.25s ease-in-out infinite; }
+.tour-tooltip > button { margin-top: 12px; border: 0; background: transparent; color: #74899b; font-size: 8px; font-weight: 800; cursor: pointer; text-decoration: underline; }
+
 @media (max-width: 1260px) {
   .map-body { grid-template-columns: minmax(560px, 1fr) 350px; }
   .brand-block { min-width: 310px; }
@@ -644,10 +684,13 @@ button { color: inherit; }
   .group-selection-banner span, .edge-selection-banner span { flex: 1; }
   .sound-popover { position: fixed; top: 70px; right: 10px; }
   .creation-grid { grid-template-columns: 1fr; }
+  .layout-options { grid-template-columns: 1fr; }
+  .layout-options > button { min-height: 112px; flex-direction: row; }
   .connection-choice { grid-template-columns: 1fr; }
   .backup-list article { grid-template-columns: 38px minmax(0, 1fr); }
   .backup-list article button { grid-column: auto; }
   .tutorial-modal { grid-template-columns: 1fr; }
   .tutorial-visual { min-height: 150px; }
   .tutorial-lines { display: none; }
+  .hierarchy-level-guide { display: none; }
 }

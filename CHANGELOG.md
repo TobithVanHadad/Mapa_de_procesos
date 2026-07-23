@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0] - 2026-07-23
+
+### Added
+
+- Ligaduras automáticas, delgadas y diferenciadas entre todos los elementos que comparten departamento.
+- Modo `Conectar nodos` para crear relaciones haciendo clic en dos tarjetas, además de conectores visuales más grandes.
+- Asignación de varios jefes directos por persona y nivel jerárquico `Administrativo`.
+- Organigrama alineado por niveles explícitos para mantener Dirección, Gerencia y los demás rangos a la misma altura.
+- Tres sugerencias de acomodo: camino principal, por departamento y cuadrícula compacta, con opción para deshacer.
+- Reporte integral descargable en HTML con formato de impresión y guardado como PDF.
+- Tutorial de ocho pasos sobre la interfaz real, con zonas iluminadas y avance mediante clic.
+
+### Changed
+
+- El sonido de escritura ahora se sintetiza como un interruptor mecánico con golpe y ruido filtrado, sin tono de videojuego.
+- El reporte y el organigrama incluyen relaciones automáticas, departamentos y múltiples jefaturas.
+
 ## [0.5.0] - 2026-07-23
 
 ### Added
