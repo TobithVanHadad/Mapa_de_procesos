@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0] - 2026-07-23
+
+### Added
+
+- Corte individual de conexiones sin eliminar nodos, fichas ni archivos.
+- Conexiones paralelas entre los mismos elementos y relaciones automáticas cuando una persona o puesto se reutiliza como participante.
+- Selección por recuadro para mover varios nodos como grupo.
+- Campos especializados para ramas, subprocesos, personas, sistemas, documentos y controles.
+- Sugerencias reutilizables de personas, puestos, responsables y departamentos ya registrados.
+- Jerarquía de personas mediante el campo `Reporta a` y organigrama agrupado visualmente por departamento.
+
+### Changed
+
+- La categoría `Salida` se retiró; los nodos existentes de ese tipo se migran a rama principal conservando toda su información.
+- Los controles flotantes permanecen contraídos y muestran su etiqueta al pasar el cursor.
+- El organigrama ya no depende de conexiones manuales del mapa de procesos.
+
 ## [0.4.0] - 2026-07-22
 
 ### Added
